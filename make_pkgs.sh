@@ -2,17 +2,18 @@
 set -euo pipefail
 
 declare -r DELETE_PKG_SRC=0
-declare -r DELETE_PKG_BLD=1
+declare -r DELETE_PKG_BLD=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/etc/common.sh"
 
 # Constant initialisation
 declare -r ORIG_PATH="$PATH"
-declare -r PKG_TAR_DIR="$SOURCE_DIRECTORY/pkg"
+declare -rA LIBS=(["shared"]="static" ["static"]="shared")
+declare -r PKG_TAR_DIR="$SOURCE_DIRECTORY/pkg/tar"
 declare -r PKG_BLD_DIR="$BUILD_DIRECTORY/pkg"
 declare -r PKG_INS_DIR="$INSTALL_DIRECTORY/pkg"
-declare -r PKGS=`ls -m $PKG_TAR_DIR | sed -e 's#\.tar\.[^,]\+##g' | tr '\n' ' '`
+declare -r PKGS=`find $PKG_TAR_DIR -maxdepth 1 -name \*.tar.\* -printf '%f, ' | sed -e 's#\.tar\.[^,]\+##g' -e 's#, *$##'`
 
 # Function definitions
 function usage() {
@@ -129,7 +130,7 @@ function patch_gtk_3_24_32() {
 
 # Build
 function build_pkg() {
-  local -r PKG="$1"; local -r TRG="$2"; local -r PKG_SRC=$3; shift 3
+  local -r PKG="$1"; local -r LIB=$2; local -r TRG="$3"; local -r PKG_SRC=$4; shift 4
 
   # Reset PATH
   PATH="$ORIG_PATH"
@@ -145,8 +146,8 @@ function build_pkg() {
   esac
 
   # Build and install directories
-  local -r PKG_INS="$PKG_INS_DIR/$TRG"
-  local -r PKG_BLD="$PKG_BLD_DIR/$TRG/$SPKG"
+  local -r PKG_INS="$PKG_INS_DIR/$TRG/$LIB"
+  local -r PKG_BLD="$PKG_BLD_DIR/$TRG/$LIB/$SPKG"
   mkdir -p "$PKG_INS" "$PKG_BLD"
 
   export PATH="$INSTALL_DIRECTORY/cross/$TRG/bin:$PATH"
@@ -226,8 +227,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --disable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --without-docbook
     ;;
   cairo-*)
@@ -235,7 +236,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       -Dspectre=disabled \
       -Dglib=enabled \
@@ -264,7 +265,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       -Dicu=disabled \
       -Dgraphite=disabled \
@@ -278,7 +279,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       -Dfontconfig=enabled \
       -Dfreetype=enabled \
@@ -294,7 +295,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       --wrap-mode=forcefallback \
       -Dintrospection=disabled \
@@ -309,7 +310,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       -Dintrospection=false
 
@@ -326,7 +327,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       -Dintrospection=disabled \
       -Dgtk_doc=false \
@@ -337,7 +338,7 @@ EOF
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --prefix "$PKG_INS" \
-      --default-library both \
+      --default-library $LIB \
       --buildtype release \
       -Ddocs=false
     ;;
@@ -350,8 +351,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --disable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --disable-cups \
       --disable-glibtest \
       --disable-demos \
@@ -362,8 +363,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --enable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --with-schannel \
       --without-gnutls \
       --without-mbedtls \
@@ -384,8 +385,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --enable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --without-python
     ;;
   libcroco-*)
@@ -394,8 +395,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --disable-shared \
-      --enable-static
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB
     ;;
   librsvg-*)
     perl -0pi -e \
@@ -407,8 +408,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --disable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --enable-introspection=no \
       --disable-gtk-doc \
       --disable-pixbuf-loader \
@@ -435,8 +436,8 @@ EOF
       -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
       -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
       -DCMAKE_BUILD_TYPE=Release \
-      -DLWS_WITH_SHARED=OFF \
-      -DLWS_WITH_STATIC=ON \
+      -DLWS_WITH_SHARED=$(if [ "X$LIB" -eq "Xshared" ]; then "ON";else "OFF";fi) \
+      -DLWS_WITH_STATIC=$(if [ "X$LIB" -eq "Xstatic" ]; then "ON";else "OFF";fi) \
       -DLWS_WITH_SSL=OFF \
       -DLWS_WITHOUT_TESTAPPS=ON \
       -DLWS_WITHOUT_TEST_CLIENT=ON \
@@ -457,8 +458,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --disable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --disable-esd \
       --disable-arts \
       --disable-nas \
@@ -475,8 +476,8 @@ EOF
     "$PKG_SRC/configure" \
       --host="$TRG" \
       --prefix="$PKG_INS" \
-      --disable-shared \
-      --enable-static \
+      --disable-${LIBS[$LIB]} \
+      --enable-$LIB \
       --disable-modules \
       --with-default-audio=win32
     ;;
@@ -487,15 +488,14 @@ EOF
       "$PKG_SRC/configure" \
         --host="$TRG" \
         --prefix="$PKG_INS" \
-        --disable-shared \
-        --enable-static \
-        --enable-shared
+        --disable-${LIBS[$LIB]} \
+        --enable-$LIB
     elif [[ "X$BUILD_TYPE" == "Xmeson" ]]
     then
       meson setup "$PKG_BLD" "$PKG_SRC" \
         --cross-file "$MESON_CROSS_FILE" \
         --prefix "$PKG_INS" \
-        --default-library static \
+        --default-library $LIB \
         --buildtype release \
         -Ddocs=false
     fi
@@ -521,18 +521,22 @@ do
   PKG_TAR=`ls $PKG_TAR_DIR/${PKG}*.tar.*`
   SPKG=`basename ${PKG_TAR%%.tar.*}`
   # Package extracted source directory
-  PKG_SRC="$PKG_TAR_DIR/$SPKG"
+  PKG_SRC="$PKG_BLD_DIR/src/$SPKG"
+  rm -rf "$PKG_SRC"
   mkdir -p "$PKG_SRC"
   if [ "$DELETE_PKG_SRC" -ne 0 -a -n "${DELETE_PKG_SRC:-}" ]
   then
     TEMP_DIR="$TEMP_DIR $PKG_SRC"
   fi
-  tar --strip-components=1 --directory="$PKG_SRC" --skip-old-files -xaf "$PKG_TAR"
+  tar --strip-components=1 --directory="$PKG_SRC" -xaf "$PKG_TAR"
 
   for TRG in "$TRG64" "$TRG32"
   do
-    echo
-    echo "Building $PKG for $TRG"
-    build_pkg "$PKG" "$TRG" "$PKG_SRC"
+    for LIB in "${LIBS[@]}"
+    do
+      echo
+      echo "Building $LIB $PKG for $TRG"
+      build_pkg "$PKG" "$LIB" "$TRG" "$PKG_SRC"
+    done
   done
 done
