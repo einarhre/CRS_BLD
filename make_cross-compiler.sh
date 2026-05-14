@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/common.sh"
+source "$SCRIPT_DIR/etc/common.sh"
 
 # Constant initialisation
 declare -rA DLLS=([${TRG64}]="libgcc_s_seh-1.dll" [${TRG32}]="libgcc_s_sjlj-1.dll")
@@ -63,7 +63,7 @@ then
   then
     exit 1
   fi
-  # and cretae a new link.
+  # and create a new link.
   ln -sf ${BINUTILS_FN%%.tar.bz2} $SOURCE_DIRECTORY/binutils
 
   # Change gcc version
@@ -94,8 +94,8 @@ then
 
   ## Clean previous build
   echo -e "\nClean previous build..."
-  rm -rf  $BUILD_DIRECTORY
-  rm -rf  $INSTALL_DIRECTORY
+  rm -rf  $BUILD_DIRECTORY/{cross,native}
+  rm -rf  $INSTALL_DIRECTORY/{cross,native}
   mkdir -p $BUILD_DIRECTORY/{cross,native}/{$TRG32,$TRG64}/{binutils,gcc,mingw-w64}
   mkdir -p $BUILD_DIRECTORY/cross/{$TRG32,$TRG64}/mingw-w64-headers
   mkdir -p $INSTALL_DIRECTORY/{cross,native}/{$TRG32,$TRG64}
@@ -112,7 +112,7 @@ function build_target() {
   # 1. Start with cross-binutils, the first component of the cross-compiler
   echo -e "\n Start with cross-binutils, the first component of the cross-compiler..."
   cd $BUILD_DIRECTORY/cross/$TRG/binutils
-  [[ -f config.log ]] || ../../../../src/binutils/configure --prefix=$INSTALL_DIRECTORY/cross/$TRG --target=$TRG --disable-multilib
+  [[ -f config.log ]] || ../../../../src/cpl/binutils/configure --prefix=$INSTALL_DIRECTORY/cross/$TRG --target=$TRG --disable-multilib
   make -j $NCR && make install || comp_fail "cross binutils"
   # ...and make sure these are found on PATH
   local -r PATH=$INSTALL_DIRECTORY/cross/$TRG/bin:$PATH
@@ -120,19 +120,19 @@ function build_target() {
   # 2. Install the mingw-w64 headers into the target (Windows) sysroot of the cross-compiler
   echo -e "\n Install the mingw-w64 headers into the target (Windows) sysroot of the cross-compiler..."
   cd $BUILD_DIRECTORY/cross/$TRG/mingw-w64-headers
-  [[ -f config.log ]] || ../../../../src/mingw-w64/mingw-w64-headers/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/cross/$TRG/$TRG
+  [[ -f config.log ]] || ../../../../src/cpl/mingw-w64/mingw-w64-headers/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/cross/$TRG/$TRG
   make install || comp_fail "host mingw-w64-headers"
 
   # 3. With the target headers installed, build the core gcc cross-compiler
   echo -e "\n With the target headers installed, build the core gcc cross-compiler..."
   cd $BUILD_DIRECTORY/cross/$TRG/gcc
-  [[ -f config.log ]] || ../../../../src/gcc/configure --prefix=$INSTALL_DIRECTORY/cross/$TRG --target=$TRG --disable-multilib --enable-languages=c,c++,fortran
+  [[ -f config.log ]] || ../../../../src/cpl/gcc/configure --prefix=$INSTALL_DIRECTORY/cross/$TRG --target=$TRG --disable-multilib --enable-languages=c,c++,fortran
   make -j $NCR all-gcc && make install-gcc || comp_fail "cross all-gcc"
 
   # 4. Build mingw-w64 CRT and install into cross-compiler sysroot
   echo -e "\n Build mingw-w64 CRT and install into cross-compiler sysroot..."
   cd $BUILD_DIRECTORY/cross/$TRG/mingw-w64
-  [[ -f config.log ]] || ../../../../src/mingw-w64/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/cross/$TRG/$TRG
+  [[ -f config.log ]] || ../../../../src/cpl/mingw-w64/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/cross/$TRG/$TRG
   make && make install || comp_fail "host mingw-w64"
 
   # 5. Finish building the gcc cross-compiler
@@ -143,20 +143,20 @@ function build_target() {
   # 6. Build Windows-native binutils
   echo -e "\n Build Windows-native binutils..."
   cd $BUILD_DIRECTORY/native/$TRG/binutils
-  [[ -f config.log ]] || ../../../../src/binutils/configure --prefix=$INSTALL_DIRECTORY/native/$TRG --host=$TRG --target=$TRG --disable-multilib
+  [[ -f config.log ]] || ../../../../src/cpl/binutils/configure --prefix=$INSTALL_DIRECTORY/native/$TRG --host=$TRG --target=$TRG --disable-multilib
   make -j $NCR && make install || comp_fail "host binutils"
 
   # 7. Build Windows-native gcc
   echo -e "\n Build Windows-native gcc..."
   cd $BUILD_DIRECTORY/native/$TRG/gcc
-  [[ -f config.log ]] || ../../../../src/gcc/configure --prefix=$INSTALL_DIRECTORY/native/$TRG --host=$TRG --target=$TRG --disable-multilib --enable-languages=c,c++,fortran
+  [[ -f config.log ]] || ../../../../src/cpl/gcc/configure --prefix=$INSTALL_DIRECTORY/native/$TRG --host=$TRG --target=$TRG --disable-multilib --enable-languages=c,c++,fortran
   make -j $NCR && make install || comp_fail "host gcc"
   mv $INSTALL_DIRECTORY/native/$TRG/lib/${DLLS[$TRG]} $INSTALL_DIRECTORY/native/$TRG/bin/
 
   # 8. Build mingw-w64 headers and libs (including winpthreads) and install into native toolchain sysroot
   echo -e "\n Build mingw-w64 headers and libs (including winpthreads) and install into native toolchain sysroot..."
   cd $BUILD_DIRECTORY/native/$TRG/mingw-w64
-  [[ -f config.log ]] || ../../../../src/mingw-w64/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/native/$TRG/$TRG --with-libraries=winpthreads
+  [[ -f config.log ]] || ../../../../src/cpl/mingw-w64/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/native/$TRG/$TRG --with-libraries=winpthreads
   make && make install || comp_fail "host mingw-w64"
 
   # 8. Package the native installation folder
