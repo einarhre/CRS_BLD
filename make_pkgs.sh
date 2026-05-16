@@ -2,18 +2,31 @@
 set -euo pipefail
 
 declare -r DELETE_PKG_SRC=0
-declare -r DELETE_PKG_BLD=0
+declare -r DELETE_PKG_BLD=1
+declare -r PARALLEL_LOOP=1
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/etc/common.sh"
+script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/etc/common.sh"
+unset script_dir
 
 # Constant initialisation
-declare -r ORIG_PATH="$PATH"
 declare -ra BUILD_KINDS=([0]="static" [1]="shared")
 declare -rA BUILD_KINDS_REV=(
   [${BUILD_KINDS[0]}]=${BUILD_KINDS[1]}
   [${BUILD_KINDS[1]}]=${BUILD_KINDS[0]}
 )
+
+# For parallelising the loop
+declare -ri PARALLEL_RUNS=$((
+  (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP) <= 16 ?
+  (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP)       :
+   16
+))
+declare -ri NCRS_PER_RUN=$((
+  (1 + (NCRS / PARALLEL_RUNS - 1) * PARALLEL_LOOP) >= 1 ? 
+  (1 + (NCRS / PARALLEL_RUNS - 1) * PARALLEL_LOOP)      :
+   1
+))
 
 # Define the directory structure
 declare -r PKG_TAR_DIR="$SOURCE_DIRECTORY/pkg/tar"
@@ -23,7 +36,13 @@ declare -r PKG_BLD_DIR="$BUILD_DIRECTORY/pkg"
 declare -r PKG_INS_DIR="$INSTALL_DIRECTORY/pkg"
 
 # Collect the available packages to compile
-declare -r PKGS=`find $PKG_TAR_DIR -maxdepth 1 -name \*.tar.\* -printf '%f, ' | sed -e 's#\.tar\.[^,]\+##g' -e 's#, *$##'`
+declare -a pkgs=()
+while IFS= read -r f
+do
+  pkgs+=("$(basename "${f%%.tar.*}")")
+done < <(
+  find "$PKG_TAR_DIR" -maxdepth 1 -name '*.tar.*'
+)
 
 # Function definitions
 function usage() {
@@ -31,18 +50,18 @@ function usage() {
   echo " usage: $0 pkg1 [pkg2...]"
   echo
   echo " archives must exist in: $PKG_TAR_DIR"
-  echo " available gcc packages: $PKGS"
+  echo " available gcc packages: ${pkgs[@]}"
   echo
   exit 1
 }
 
 # Deletes the temp directory on exit
-declare TEMP_DIR=""
+declare temp_dir=""
 function cleanup() {
-  if [ -n "${TEMP_DIR:-}" ]
+  if [ -n "${temp_dir:-}" ]
   then
-    rm -rf $TEMP_DIR
-    echo -e " deleted temporary working directories: $TEMP_DIR\n"
+    rm -rf -- "$temp_dir"
+    echo -e " deleted temporary working directories: $temp_dir\n"
   fi
 }
 trap cleanup EXIT
@@ -52,24 +71,34 @@ if [ $# -lt 1 ]
 then
   usage
 fi
-declare -r PKGS_TO_COMPILE="$@"; shift $#
+declare -ra PKGS_TO_COMPILE=("$@"); shift $#
 
-for PKG in $PKGS_TO_COMPILE
+# Check that all packages can be uniquely determined
+for pkg in "${PKGS_TO_COMPILE[@]}"
 do
-  case $PKGS in
-    *${PKG}*)
-      if [ `ls $PKG_TAR_DIR/${PKG}*.tar.* | wc -l` -ne 1 ]
+  found=0
+  for pkg_full in "${pkgs[@]}"
+  do
+    if [[ "$pkg_full" == *"${pkg}"* ]]
+    then
+      found=$(($found + 1))
+      echo $found
+      if [ $found -gt 1 ]
       then
-        echo -e "\nPackage not unique: $PKG\n"
+        echo "Package not unique: $pkg"
+        echo
         usage
       fi
-      ;;
-    *)
-      echo -e "\nPackage not found: $PKG\n"
-      usage
-      ;;
-  esac
+    fi
+  done
+  if [ $found -lt 1 ]
+  then
+    echo "Package not found: $pkg"
+    echo
+    usage
+  fi
 done
+unset -v found pkg_full pkgs
 
 # Helper functions
 function setup_gtk_env() {
@@ -139,44 +168,83 @@ function patch_gtk_3_24_32() {
     's%^\([ \t]*\)\(test -n .*update_icon_cache.*\)$%\1#\2%' {} \;
 }
 
-# Build
-function build_pkg() {
-  local -r PKG="$1"; local -r BKIND=$2; local -r TRG="$3"; shift 3
+# Apply patch
+function apply_patch_file() {
+  local -r PTC="$1"; local -r PKG_SRC="$2"; shift 2
+  local -r PATCH_HISTORY="$PKG_SRC/.patches_applied"
 
-  # Reset PATH
-  PATH="$ORIG_PATH"
-  case "$TRG" in
-  x86_64-*)
-    CPU_FAMILY="x86_64"
-    CPU="x86_64"
-    ;;
-  i686-*)
-    CPU_FAMILY="x86"
-    CPU="i686"
-    ;;
-  esac
+  if [ -f $PKG_SRC/.patches_applied ] && \
+     [ $(grep -F -m 1 -c -e "$PTC" -- $PATCH_HISTORY) -ge 1 ]
+  then
+    echo "Patch has already been applied: $PTC"
+  else
+    echo "Applying patch: $PTC"
+    patch -d "$PKG_SRC" -p1 < "$PTC"
+    echo "$PTC" >> "$PATCH_HISTORY"
+  fi
+}
+
+
+function load_pkg_config() {
+  local -r PKG="$1"; shift
+
+  local cfg=""
+
+  if [ -f "$PKG_CFG_DIR/$PKG.sh" ]; then
+    cfg="$PKG_CFG_DIR/$PKG.sh"
+  else
+    cfg="$(find "$PKG_CFG_DIR" -maxdepth 1 -name "${PKG%%-*}*.sh" -type f | sort | head -n 1)"
+  fi
+
+  if [ -n "$cfg" ]; then
+    echo "Loading package config: $cfg"
+    source "$cfg"
+  fi
+}
+
+# Run a hook
+run_hook() {
+  local -r HOOK="$1"; shift
+
+  if declare -F "$HOOK" >/dev/null
+  then
+    "$HOOK"
+  fi
+}
+
+# Build in a subshell (isolated environment for each build)
+function build_pkg() (
+  local -r PKG="$1"; local -r BKIND=$2; local -r TRG="$3"; local -r NJOBS=$4; shift 4
+
+  # Gera loggið læsilegra
+  if [ "$PARALLEL_LOOP" -ne 0 -a -n "${PARALLEL_LOOP:-}" ]
+  then
+    exec > >(sed "s/^/[$PKG:$TRG:$BKIND] /")
+    exec 2>&1
+  fi
 
   # Find name of archive with and without suffix
-  PKG_TAR=`ls $PKG_TAR_DIR/${PKG}*.tar.*`
-  SPKG=`basename ${PKG_TAR%%.tar.*}`
+  mapfile -d '' -t pkg_tars < <(
+    find "$PKG_TAR_DIR" -maxdepth 1 -name "${PKG}*.tar.*" -type f -print0 | sort -z
+  )
+  if [ "${#pkg_tars[@]}" -ne 1 ]
+  then
+    printf 'Expected exactly one tarball for %s, found %d\n' "$PKG" "${#pkg_tars[@]}" >&2
+    printf '  %s\n' "${pkg_tars[@]}" >&2
+    exit 1
+  fi
+  local -r PKG_TAR="${pkg_tars[0]}"
+  local -r SPKG="$(basename "${PKG_TAR%%.tar.*}")"
+  unset pkg_tars
 
   # Build, patch and install directories
   local -r PKG_INS="$PKG_INS_DIR/$TRG/$BKIND"
   local -r PKG_BLD="$PKG_BLD_DIR/$TRG/$BKIND/build/$SPKG"
   local -r PKG_SRC="$PKG_BLD_DIR/$TRG/$BKIND/src/$SPKG"
-  mkdir -p "$PKG_SRC" "$PKG_INS" "$PKG_BLD"
+  mkdir -p -- "$PKG_SRC" "$PKG_INS" "$PKG_BLD"
 
-  # Package extracted into its mutuable source directory
-  if [ "$DELETE_PKG_SRC" -ne 0 -a -n "${DELETE_PKG_SRC:-}" ]
-  then
-    TEMP_DIR="$TEMP_DIR $PKG_SRC"
-  fi
-  if [ ! -d "$PKG_SRC" ]; then
-    mkdir -p "$PKG_SRC"
-    tar --strip-components=1 --directory="$PKG_SRC" -xaf "$PKG_TAR"
-  fi
-
-  export PATH="$INSTALL_DIRECTORY/cross/$TRG/bin:$PATH"
+  BIN="$INSTALL_DIRECTORY/cross/$TRG/bin"
+  export PATH="$BIN:$PATH"
   export CC="$TRG-gcc"
   export CXX="$TRG-g++"
   export AR="$TRG-ar"
@@ -187,16 +255,27 @@ function build_pkg() {
   export PKG_CONFIG_LIBDIR="$PKG_INS/lib/pkgconfig:$PKG_INS/lib64/pkgconfig:$PKG_INS/share/pkgconfig"
   export PKG_CONFIG_PATH=
 
-  export CPPFLAGS="-I$PKG_INS/include"
-  export CFLAGS="-I$PKG_INS/include"
-  export CXXFLAGS="-I$PKG_INS/include"
-  export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64"
-
   # Collect for deleting the temporary directory on exit
   if [ "$DELETE_PKG_BLD" -ne 0 -a -n "${DELETE_PKG_BLD:-}" ]
   then
-    TEMP_DIR="$TEMP_DIR $PKG_BLD"
+    temp_dir="$temp_dir $PKG_BLD"
   fi
+  if [ "$DELETE_PKG_SRC" -ne 0 -a -n "${DELETE_PKG_SRC:-}" ]
+  then
+    temp_dir="$temp_dir $PKG_SRC"
+  fi
+
+  # Define variables for the meson ini file
+  case "$TRG" in
+  x86_64-*)
+    cpu_family="x86_64"
+    cpu="x86_64"
+    ;;
+  i686-*)
+    cpu_family="x86"
+    cpu="i686"
+    ;;
+  esac
 
   local -r MESON_CROSS_FILE="$PKG_BLD_DIR/$TRG/meson-$TRG.ini"
   if [ ! -f $MESON_CROSS_FILE -o $MESON_CROSS_FILE -ot $INSTALL_DIRECTORY/cross/$TRG ]
@@ -212,360 +291,451 @@ pkg-config = '/usr/bin/pkg-config'
 
 [host_machine]
 system = 'windows'
-cpu_family = '$CPU_FAMILY'
-cpu = '$CPU'
+cpu_family = '$cpu_family'
+cpu = '$cpu'
 endian = 'little'
 
 [properties]
 needs_exe_wrapper = true
 EOF
   fi
+  unset cpu_family cpu
 
-  # Determine known default configurations
-  if [ -f $PKG_SRC/meson.build ]
+  # Load available information about how to compile static and shared libraries
+  # for current package
+  load_pkg_config "$PKG"
+
+  # Make compilerflags available (note configuration specific additions)
+  export CPPFLAGS="-I$PKG_INS/include ${CFG_CPPFLAGS[*]}"
+  export CFLAGS="-I$PKG_INS/include ${CFG_CFLAGS[*]}"
+  export CXXFLAGS="-I$PKG_INS/include ${CFG_CXXFLAGS[*]}"
+  export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 ${CFG_LDFLAGS[*]}"
+  export LIBS="${CFG_LIBS[*]}"
+
+  # Package extracted into its mutuable source directory, patches
+  # applied and any post extraction configuration applied to the code.
+  local -r PKG_EXTRACTED="$PKG_SRC/.extracted"
+  if [ ! -f "$PKG_EXTRACTED" ]
   then
-    BUILD_TYPE="meson"
-  elif [ -f $PKG_SRC/configure ]
-  then
-    BUILD_TYPE="aconf"
+    tar --strip-components=1 --directory="$PKG_SRC" -xaf "$PKG_TAR"
+    # Apply available patches for this packages
+    while IFS= read -r -d '' ptc
+    do
+      apply_patch_file "$ptc" "$PKG_SRC"
+    done < <(
+      find "$PKG_PTC_DIR" -maxdepth 1 -iname "${PKG}*.patch" -type f -print0 | sort -z
+    )
+    # Apply specific configuration for this build
+    run_hook cfg_post_extract
+    touch -- "$PKG_EXTRACTED"
+    unset ptc
   fi
 
   # Enter build directory
-  cd "$PKG_BLD"
+  cd -- "$PKG_BLD"
 
   # Special cases
-  case "$PKG" in
-  zlib-*)
-    [[ -f config.log ]] || \
-    CHOST="$TRG" \
-    "$PKG_SRC/configure" \
-      --prefix="$PKG_INS"
+#  case "$PKG" in
+#  zlib*)
+#    CHOST="$TRG" \
+#    "$PKG_SRC/configure" \
+#      --prefix="$PKG_INS"
+#    ;;
+#  pixman*)
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --buildtype release
+#    ;;
+#  expat*)
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --without-docbook
+#    ;;
+#  cairo*)
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Dspectre=disabled \
+#      -Dglib=enabled \
+#      -Ddwrite=disabled \
+#      -Dfreetype=enabled \
+#      -Dfontconfig=enabled \
+#      -Dpng=enabled \
+#      -Dzlib=enabled
+#
+#    ninja -j "$NJOBS" -C "$PKG_BLD"
+#    ninja -C "$PKG_BLD" install
+#
+#    # Cairo is installed as a static library, so consumers must not use dllimport.
+#    for pc in "$PKG_INS/lib/pkgconfig/cairo.pc" "$PKG_INS/lib64/pkgconfig/cairo.pc"
+#    do
+#      if [ -f "$pc" ] && ! grep -q 'CAIRO_STATIC_BUILD' "$pc"; then
+#        sed -i \
+#          's/^Cflags: \(.*\)$/Cflags: \1 -DCAIRO_STATIC_BUILD -DCAIRO_WIN32_STATIC_BUILD/' \
+#          "$pc"
+#      fi
+#    done
+#    return
+#    ;;
+#  harfbuzz*)
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Dicu=disabled \
+#      -Dgraphite=disabled \
+#      -Dglib=disabled \
+#      -Ddocs=disabled
+#    ;;
+#  pango*)
+#    export CFLAGS="$CFLAGS -DCAIRO_WIN32_STATIC_BUILD -DCAIRO_STATIC_BUILD"
+#    export CXXFLAGS="$CXXFLAGS -DCAIRO_WIN32_STATIC_BUILD -DCAIRO_STATIC_BUILD"
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Dfontconfig=enabled \
+#      -Dfreetype=enabled \
+#      -Dcairo=enabled \
+#      -Dintrospection=disabled \
+#      -Dgtk_doc=false \
+#      -Dinstall-tests=false \
+#      -Dlibthai=disabled \
+#      -Dxft=disabled
+#  ;;
+#  glib*)
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Dintrospection=disabled \
+#      -Dnls=disabled \
+#      -Dgtk_doc=false \
+#      -Dman-pages=disabled \
+#      -Dsysprof=disabled \
+#      -Ddtrace=false
+#    ;;
+#  atk-*)
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Dintrospection=false
+#
+#    ninja -j "$NJOBS" -C "$PKG_BLD"
+#    ninja -C "$PKG_BLD" install
+#
+#    sed -i \
+#      's/^Cflags: \(.*\)$/Cflags: \1 -DATK_STATIC_COMPILATION/' \
+#      "$PKG_INS/lib/pkgconfig/atk.pc"
+#    return
+#    ;;
+#  gdk-pixbuf*)
+#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lpng16 -lz -lexpat"
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Dintrospection=disabled \
+#      -Dgtk_doc=false \
+#      -Dman=false \
+#      -Dinstalled_tests=false
+#    ;;
+#  libepoxy*)
+#    meson setup "$PKG_BLD" "$PKG_SRC" \
+#      --cross-file "$MESON_CROSS_FILE" \
+#      --wrap-mode=nofallback \
+#      --prefix "$PKG_INS" \
+#      --default-library $BKIND \
+#      --buildtype release \
+#      -Ddocs=false
+#    ;;
+#  gtk+*)
+#    patch_gtk_3_24_32 $PKG_SRC
+#    setup_gtk_env $PKG_INS
+#
+#    PANGO_CFLAGS="$PANGO_CFLAGS" PANGO_LIBS="$PANGO_LIBS" \
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --disable-cups \
+#      --disable-glibtest \
+#      --disable-demos \
+#      --disable-installed-tests
+#    ;;
+#  curl*)
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --with-schannel \
+#      --without-gnutls \
+#      --without-mbedtls \
+#      --without-wolfssl \
+#      --without-zstd \
+#      --without-brotli \
+#      --without-libpsl \
+#      --without-nghttp2 \
+#      --without-ngtcp2 \
+#      --without-nghttp3 \
+#      --without-quiche \
+#      --disable-ldap \
+#      --disable-ldaps \
+#      --disable-manual
+#    ;;
+#  libxml2*)
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --without-python
+#    ;;
+#  libcroco*)
+#    export LIBS="-lole32 -luuid -lshlwapi -lws2_32 -lintl -lpcre2-8 -lffi -lz -lm"
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND
+#    ;;
+#  librsvg*)
+#    perl -0pi -e \
+#      's/rsvg_xml_noerror\s*\(\s*void\s*\*data,\s*xmlErrorPtr\s*error\s*\)/rsvg_xml_noerror (void *data, const xmlError *error)/s' \
+#      "$PKG_SRC/rsvg-css.c"
+#  
+#    export LIBS="-lole32 -luuid -lshlwapi -lws2_32 -lintl -lpcre2-8 -lffi -lz -lm"
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --enable-introspection=no \
+#      --disable-gtk-doc \
+#      --disable-pixbuf-loader \
+#      --disable-tools
+#
+#    sed -i \
+#      's/rsvg-view-3$(EXEEXT)//g; s/rsvg_view_3-test-display\.\$(OBJEXT)//g' \
+#      "$PKG_BLD/Makefile"
+#    ;;
+#  libwebsockets*)
+#    sed -i \
+#      's/-l:libwebsockets${CMAKE_STATIC_LIBRARY_SUFFIX}/-l:libwebsockets_static${CMAKE_STATIC_LIBRARY_SUFFIX}/' \
+#      "$PKG_SRC/lib/CMakeLists.txt"
+#
+#    local LWS_SHARED=OFF
+#    local LWS_STATIC=OFF
+#    if [ "$BKIND" = "${BUILD_KINDS[1]}" ]; then
+#      LWS_SHARED=ON
+#    else
+#      LWS_STATIC=ON
+#    fi
+#
+#    cmake "$PKG_SRC" \
+#      -DCMAKE_SYSTEM_NAME=Windows \
+#      -DCMAKE_C_COMPILER="$CC" \
+#      -DCMAKE_AR="$BIN/$AR" \
+#      -DCMAKE_RANLIB="$BIN/$RANLIB" \
+#      -DCMAKE_STRIP="$BIN/$STRIP" \
+#      -DCMAKE_INSTALL_PREFIX="$PKG_INS" \
+#      -DCMAKE_PREFIX_PATH="$PKG_INS" \
+#      -DCMAKE_FIND_ROOT_PATH="$PKG_INS" \
+#      -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+#      -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+#      -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+#      -DCMAKE_BUILD_TYPE=Release \
+#      -DLWS_WITH_SHARED=$LWS_SHARED \
+#      -DLWS_WITH_STATIC=$LWS_STATIC \
+#      -DLWS_WITH_SSL=OFF \
+#      -DLWS_WITHOUT_TESTAPPS=ON \
+#      -DLWS_WITHOUT_TEST_CLIENT=ON \
+#      -DLWS_WITHOUT_TEST_SERVER=ON \
+#      -DLWS_WITHOUT_TEST_PING=ON \
+#      -DLWS_WITHOUT_TEST_SERVER_EXTPOLL=ON \
+#      -DLWS_WITH_ZLIB=ON
+#    ;;
+#  libao*)
+#    cd -- "$PKG_SRC"
+#
+#    ./autogen.sh
+#    BUILD_TYPE="aconf"
+#
+#    cd -- "$PKG_BLD"
+#
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --disable-esd \
+#      --disable-arts \
+#      --disable-nas \
+#      --disable-pulse \
+#      --disable-macosx \
+#      --disable-sndio
+#    ;;
+#  mpg123*)
+#    sed -i \
+#      's/dump_close(sd);/dump_close();/' \
+#        "$PKG_SRC/src/streamdump.c"
+#
+#    "$PKG_SRC/configure" \
+#      --host="$TRG" \
+#      --prefix="$PKG_INS" \
+#      --disable-${BUILD_KINDS_REV[$BKIND]} \
+#      --enable-$BKIND \
+#      --disable-modules \
+#      --with-default-audio=win32
+#    ;;
+#  *)
+#    if [ "X$BUILD_TYPE" = "Xaconf" ]
+#    then
+#      "$PKG_SRC/configure" \
+#        --host="$TRG" \
+#        --prefix="$PKG_INS" \
+#        --disable-${BUILD_KINDS_REV[$BKIND]} \
+#        --enable-$BKIND
+#    elif [ "X$BUILD_TYPE" = "Xmeson" ]
+#    then
+#      meson setup "$PKG_BLD" "$PKG_SRC" \
+#        --cross-file "$MESON_CROSS_FILE" \
+#        --wrap-mode=nofallback \
+#        --prefix "$PKG_INS" \
+#        --default-library $BKIND \
+#        --buildtype release \
+#        -Ddocs=false
+#    fi
+#    ;;
+#  esac
+  local build_system_case="CFG_BUILD_SYSTEM_${BKIND^^}"
+  local build_system="${!build_system_case:-${CFG_BUILD_SYSTEM:-}}"
+  case "$build_system" in
+  "custom")
+    run_hook cfg_custom_build
     ;;
-  pixman-*)
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --buildtype release
-    ;;
-  expat-*)
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --without-docbook
-    ;;
-  cairo-*)
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Dspectre=disabled \
-      -Dglib=enabled \
-      -Ddwrite=disabled \
-      -Dfreetype=enabled \
-      -Dfontconfig=enabled \
-      -Dpng=enabled \
-      -Dzlib=enabled
-
-    ninja -j "$NCRS" -C "$PKG_BLD"
-    ninja -C "$PKG_BLD" install
-
-    # Cairo is installed as a static library, so consumers must not use dllimport.
-    for pc in "$PKG_INS/lib/pkgconfig/cairo.pc" "$PKG_INS/lib64/pkgconfig/cairo.pc"
-    do
-      if [ -f "$pc" ] && ! grep -q 'CAIRO_STATIC_BUILD' "$pc"; then
-        sed -i \
-          's/^Cflags: \(.*\)$/Cflags: \1 -DCAIRO_STATIC_BUILD -DCAIRO_WIN32_STATIC_BUILD/' \
-          "$pc"
+  "autotools")
+    if [ "${#CFG_AUTOTOOLS_BOOTSTRAP[@]}" -gt 0 ]
+    then
+      local -r BOOTSTRAP_FINISHED="$PKG_SRC/.autotools_bootstrapped"
+      if [ ! -f "$BOOTSTRAP_FINISHED" ]
+      then
+        cd -- "$PKG_SRC"
+        "${CFG_AUTOTOOLS_BOOTSTRAP[@]}"
+        touch -- "$BOOTSTRAP_FINISHED"
+        cd -- "$PKG_BLD"
       fi
-    done
-    return
-    ;;
-  harfbuzz-*)
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Dicu=disabled \
-      -Dgraphite=disabled \
-      -Dglib=disabled \
-      -Ddocs=disabled
-    ;;
-  pango-*)
-    export CFLAGS="$CFLAGS -DCAIRO_WIN32_STATIC_BUILD -DCAIRO_STATIC_BUILD"
-    export CXXFLAGS="$CXXFLAGS -DCAIRO_WIN32_STATIC_BUILD -DCAIRO_STATIC_BUILD"
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Dfontconfig=enabled \
-      -Dfreetype=enabled \
-      -Dcairo=enabled \
-      -Dintrospection=disabled \
-      -Dgtk_doc=false \
-      -Dinstall-tests=false \
-      -Dlibthai=disabled \
-      -Dxft=disabled
-  ;;
-  glib-*)
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Dintrospection=disabled \
-      -Dnls=disabled \
-      -Dgtk_doc=false \
-      -Dman-pages=disabled \
-      -Dsysprof=disabled \
-      -Ddtrace=false
-    ;;
-  atk-*)
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Dintrospection=false
-
-    ninja -j "$NCRS" -C "$PKG_BLD"
-    ninja -C "$PKG_BLD" install
-
-    sed -i \
-      's/^Cflags: \(.*\)$/Cflags: \1 -DATK_STATIC_COMPILATION/' \
-      "$PKG_INS/lib/pkgconfig/atk.pc"
-    return
-    ;;
-  gdk-pixbuf-*)
-    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lpng16 -lz -lexpat"
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Dintrospection=disabled \
-      -Dgtk_doc=false \
-      -Dman=false \
-      -Dinstalled_tests=false
-    ;;
-  libepoxy-*)
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library $BKIND \
-      --buildtype release \
-      -Ddocs=false
-    ;;
-  gtk+-*)
-    patch_gtk_3_24_32 $PKG_SRC
-    setup_gtk_env $PKG_INS
-
-    [[ -f config.log ]] || \
-    PANGO_CFLAGS="$PANGO_CFLAGS" PANGO_LIBS="$PANGO_LIBS" \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --disable-cups \
-      --disable-glibtest \
-      --disable-demos \
-      --disable-installed-tests
-    ;;
-  curl-*)
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --with-schannel \
-      --without-gnutls \
-      --without-mbedtls \
-      --without-wolfssl \
-      --without-zstd \
-      --without-brotli \
-      --without-libpsl \
-      --without-nghttp2 \
-      --without-ngtcp2 \
-      --without-nghttp3 \
-      --without-quiche \
-      --disable-ldap \
-      --disable-ldaps \
-      --disable-manual
-    ;;
-  libxml2-*)
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --without-python
-    ;;
-  libcroco-*)
-    export LIBS="-lole32 -luuid -lshlwapi -lws2_32 -lintl -lpcre2-8 -lffi -lz -lm"
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND
-    ;;
-  librsvg-*)
-    perl -0pi -e \
-      's/rsvg_xml_noerror\s*\(\s*void\s*\*data,\s*xmlErrorPtr\s*error\s*\)/rsvg_xml_noerror (void *data, const xmlError *error)/s' \
-      "$PKG_SRC/rsvg-css.c"
-  
-    export LIBS="-lole32 -luuid -lshlwapi -lws2_32 -lintl -lpcre2-8 -lffi -lz -lm"
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --enable-introspection=no \
-      --disable-gtk-doc \
-      --disable-pixbuf-loader \
-      --disable-tools
-
-    sed -i \
-      's/rsvg-view-3$(EXEEXT)//g; s/rsvg_view_3-test-display\.\$(OBJEXT)//g' \
-      "$PKG_BLD/Makefile"
-    ;;
-  libwebsockets-*)
-    sed -i \
-      's/-l:libwebsockets${CMAKE_STATIC_LIBRARY_SUFFIX}/-l:libwebsockets_static${CMAKE_STATIC_LIBRARY_SUFFIX}/' \
-      "$PKG_SRC/lib/CMakeLists.txt"
-
-    local LWS_SHARED=OFF
-    local LWS_STATIC=OFF
-    if [ "$BKIND" = "${BUILD_KINDS[1]}" ]; then
-      LWS_SHARED=ON
-    else
-      LWS_STATIC=ON
     fi
-
-    cmake "$PKG_SRC" \
-      -DCMAKE_SYSTEM_NAME=Windows \
-      -DCMAKE_C_COMPILER="$CC" \
-      -DCMAKE_AR="$(which $AR)" \
-      -DCMAKE_RANLIB="$(which $RANLIB)" \
-      -DCMAKE_INSTALL_PREFIX="$PKG_INS" \
-      -DCMAKE_PREFIX_PATH="$PKG_INS" \
-      -DCMAKE_FIND_ROOT_PATH="$PKG_INS" \
-      -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-      -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
-      -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DLWS_WITH_SHARED=$LWS_SHARED \
-      -DLWS_WITH_STATIC=$LWS_STATIC \
-      -DLWS_WITH_SSL=OFF \
-      -DLWS_WITHOUT_TESTAPPS=ON \
-      -DLWS_WITHOUT_TEST_CLIENT=ON \
-      -DLWS_WITHOUT_TEST_SERVER=ON \
-      -DLWS_WITHOUT_TEST_PING=ON \
-      -DLWS_WITHOUT_TEST_SERVER_EXTPOLL=ON \
-      -DLWS_WITH_ZLIB=ON
+    if [ -z "${CFG_CUSTOM_CONFIGURE:-}" ]
+    then
+      env "${CFG_CONFIGURE_ENV[@]}" \
+        "$PKG_SRC/$CFG_CONFIGURE_SH" \
+          --host="$TRG" \
+          --prefix="$PKG_INS" \
+          --disable-${BUILD_KINDS_REV[$BKIND]} \
+          --enable-$BKIND \
+          "${CFG_CONFIGURE_OPTS[@]}"
+    fi
+    run_hook cfg_post_configure
+    if [ -z "${CFG_CUSTOM_BUILD:-}" ]
+    then
+      make -j "$NJOBS" "${CFG_MAKE_BUILD_OPTS[@]}" || comp_fail "failed building $PKG"
+    fi
+    run_hook cfg_post_build
+    if [ -z "${CFG_CUSTOM_INSTALL:-}" ]
+    then
+      make install "${CFG_MAKE_INSTALL_OPTS[@]}" || comp_fail "failed installing $PKG"
+    fi
+    run_hook cfg_post_install
     ;;
-  libao-*)
-    cd "$PKG_SRC"
-
-    ./autogen.sh
-    BUILD_TYPE="aconf"
-
-    cd "$PKG_BLD"
-
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --disable-esd \
-      --disable-arts \
-      --disable-nas \
-      --disable-pulse \
-      --disable-macosx \
-      --disable-sndio
+  "meson")
+    [ ${#CFG_MESON_ENV[@]} -gt 0 ] && env "${CFG_MESON_ENV[@]}"
+    meson setup "$PKG_BLD" "$PKG_SRC" \
+      --cross-file "$MESON_CROSS_FILE" \
+      --wrap-mode=nofallback \
+      --prefix "$PKG_INS" \
+      --default-library "$BKIND" \
+      --buildtype release \
+      "${CFG_MESON_OPTS[@]}"
+    ninja -j "$NJOBS" -C "$PKG_BLD" && ninja -C "$PKG_BLD" install || \
+      comp_fail "failed compiling $PKG"
     ;;
-  mpg123-*)
-    sed -i \
-      's/dump_close(sd);/dump_close();/' \
-        "$PKG_SRC/src/streamdump.c"
-
-    [[ -f config.log ]] || \
-    "$PKG_SRC/configure" \
-      --host="$TRG" \
-      --prefix="$PKG_INS" \
-      --disable-${BUILD_KINDS_REV[$BKIND]} \
-      --enable-$BKIND \
-      --disable-modules \
-      --with-default-audio=win32
+  "cmake")
     ;;
   *)
-    if [[ "X$BUILD_TYPE" == "Xaconf" ]]
-    then
-      [[ -f config.log ]] || \
-      "$PKG_SRC/configure" \
-        --host="$TRG" \
-        --prefix="$PKG_INS" \
-        --disable-${BUILD_KINDS_REV[$BKIND]} \
-        --enable-$BKIND
-    elif [[ "X$BUILD_TYPE" == "Xmeson" ]]
-    then
-      meson setup "$PKG_BLD" "$PKG_SRC" \
-        --cross-file "$MESON_CROSS_FILE" \
-        --wrap-mode=nofallback \
-        --prefix "$PKG_INS" \
-        --default-library $BKIND \
-        --buildtype release \
-        -Ddocs=false
-    fi
+    echo "Consider supplying a config file in ./src/pkg/cfg/"
+    exit 1
     ;;
   esac
-  if [[ "X$BUILD_TYPE" == "Xaconf" ]]
-  then
-    make -j "$NCRS" && make install || \
-      comp_fail "failed compiling $PKG"
-  elif [[ "X$BUILD_TYPE" == "Xmeson" ]]
-  then
-    ninja -j "$NCRS" -C "$PKG_BLD" && ninja -C "$PKG_BLD" install || \
-      comp_fail "failed compiling $PKG"
-  else
-    echo "No default way to compile $PKG"
-    exit 1
-  fi
-}
+)
 
-for PKG in $PKGS_TO_COMPILE
+for pkg in "${PKGS_TO_COMPILE[@]}"
 do
-  for TRG in "$TRG64" "$TRG32"
+  declare prc=''
+  declare pid=''
+  declare -a failed=()
+  declare -A pid_to_job=()
+  for trg in "${TARGETS[@]}"
   do
-    for BKIND in "${BUILD_KINDS[@]}"
+    for bkind in "${BUILD_KINDS[@]}"
     do
-      echo
-      echo "Building $BKIND $PKG for $TRG"
-      build_pkg "$PKG" "$BKIND" "$TRG"
+      (
+        echo
+        echo "Building $bkind $pkg for $trg"
+        echo
+        build_pkg "$pkg" "$bkind" "$trg" "$NCRS_PER_RUN"
+      ) &
+      pid=$!
+      pid_to_job["$pid"]="$pkg:$trg:$bkind"
+      while [ "${#pid_to_job[@]}" -ge "$PARALLEL_RUNS" ]
+      do
+        if ! wait -n -p prc
+        then
+          failed+=("${pid_to_job["$prc"]}")
+        fi
+        unset 'pid_to_job[$prc]'
+      done
     done
   done
+  while [ "${#pid_to_job[@]}" -gt 0 ]
+  do
+    if ! wait -n -p prc
+    then
+      failed+=("${pid_to_job["$prc"]}")
+    fi
+    unset 'pid_to_job[$prc]'
+  done
+  if [ "${#failed[@]}" -gt 0 ]
+  then
+    echo "${#failed[@]} packages failed to compile: ${failed[*]}"
+    exit 1
+  fi
+  unset prc pid failed pid_to_job
 done
