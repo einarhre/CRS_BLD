@@ -1,9 +1,13 @@
-#!/bin/bash -x
+#!/bin/bash
 set -euo pipefail
 
-declare -r DELETE_PKG_SRC=0
-declare -r DELETE_PKG_BLD=1
-declare -r PARALLEL_LOOP=1
+# Optional behaviour
+declare -r DELETE_PKG_SRC=0 # Delete source directory after compilation (no=0, yes=1)
+declare -r DELETE_PKG_BLD=1 # Delete build directory after compilation (no=0, yes=1)
+declare -r DELETE_MESON_CONF=0 # Delete meson ini file
+declare -r DELETE_CMAKE_CONF=0 # Delete cmake toolchain file
+declare -r PARALLEL_LOOP=1  # Parallelise the loop over build kinds (e.g. 32bit, 64bit)
+                            # and targets (e.g. i686 mingw, x86_64 mingw) (no=0, yes=1)
 
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/etc/common.sh"
@@ -18,15 +22,15 @@ declare -rA BUILD_KINDS_REV=(
 
 # For parallelising the loop
 declare -ri PARALLEL_RUNS=$((
-  (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP) <= 16 ?
-  (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP)       :
-   16
-))
+  (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP) <= $NCRS ?
+  (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP)          :
+   $NCRS
+)) # Always less than or equal to the number of cores
 declare -ri NCRS_PER_RUN=$((
-  (1 + (NCRS / PARALLEL_RUNS - 1) * PARALLEL_LOOP) >= 1 ? 
-  (1 + (NCRS / PARALLEL_RUNS - 1) * PARALLEL_LOOP)      :
-   1
-))
+  PARALLEL_LOOP ?
+    NCRS / PARALLEL_RUNS :
+    NCRS
+)) # Always greater than or equal to one, since PARELLEL_RUNS <= NCRS
 
 # Define the directory structure
 declare -r PKG_TAR_DIR="$SOURCE_DIRECTORY/pkg/tar"
@@ -35,33 +39,42 @@ declare -r PKG_PTC_DIR="$SOURCE_DIRECTORY/pkg/ptc"
 declare -r PKG_BLD_DIR="$BUILD_DIRECTORY/pkg"
 declare -r PKG_INS_DIR="$INSTALL_DIRECTORY/pkg"
 
-# Collect the available packages to compile
-declare -a pkgs=()
-while IFS= read -r f
+# Collect the available configurations to compile
+declare -a cfgs=()
+while IFS= read -r fn
 do
-  pkgs+=("$(basename "${f%%.tar.*}")")
+  cfgs+=("$(basename "${fn%.sh}")")
 done < <(
-  find "$PKG_TAR_DIR" -maxdepth 1 -name '*.tar.*'
+  find "$PKG_CFG_DIR" -maxdepth 1 -name '*.sh'
 )
+unset fn
 
 # Function definitions
 function usage() {
   echo
-  echo " usage: $0 pkg1 [pkg2...]"
+  echo " usage: $0 cfg1 [cfg2...]"
   echo
-  echo " archives must exist in: $PKG_TAR_DIR"
-  echo " available gcc packages: ${pkgs[@]}"
+  echo " configuration files must exist in: $PKG_CFG_DIR"
+  echo " available gcc configurations: ${cfgs[*]}"
   echo
   exit 1
 }
 
-# Deletes the temp directory on exit
-declare temp_dir=""
+# Deletes temporary dirctories and files on exit
+declare -r CLEANUP_LIST="$(mktemp -q)"
 function cleanup() {
-  if [ -n "${temp_dir:-}" ]
+  local -a paths=()
+
+  if [ -f "$CLEANUP_LIST" ]
   then
-    rm -rf -- "$temp_dir"
-    echo -e " deleted temporary working directories: $temp_dir\n"
+    mapfile -d '' -t paths < "$CLEANUP_LIST"
+    rm -f -- "$CLEANUP_LIST"
+  fi
+
+  if [ "${#paths[@]}" -gt 0 ]
+  then
+    rm -rf -- "${paths[@]}"
+    printf 'deleted the following directories/files: %s\n\n' "${paths[*]}"
   fi
 }
 trap cleanup EXIT
@@ -71,21 +84,20 @@ if [ $# -lt 1 ]
 then
   usage
 fi
-declare -ra PKGS_TO_COMPILE=("$@"); shift $#
+declare -ra CFG_ORDER=("$@"); shift $#
 
-# Check that all packages can be uniquely determined
-for pkg in "${PKGS_TO_COMPILE[@]}"
+# Check that all configuration files can be uniquely determined
+for cfg in "${CFG_ORDER[@]}"
 do
-  found=0
-  for pkg_full in "${pkgs[@]}"
+  declare -i found=0
+  for cfg_full in "${cfgs[@]}"
   do
-    if [[ "$pkg_full" == *"${pkg}"* ]]
+    if [ "$cfg_full" = "${cfg}" ]
     then
-      found=$(($found + 1))
-      echo $found
+      ! ((found++)) # "!" is a hack to have "set -e" option ignore the exit status of ((
       if [ $found -gt 1 ]
       then
-        echo "Package not unique: $pkg"
+        echo "Configuration not unique: $cfg"
         echo
         usage
       fi
@@ -93,12 +105,12 @@ do
   done
   if [ $found -lt 1 ]
   then
-    echo "Package not found: $pkg"
+    echo "Configuration not found: $cfg"
     echo
     usage
   fi
 done
-unset -v found pkg_full pkgs
+unset cfg found cfg_full cfgs
 
 # Helper functions
 function setup_gtk_env() {
@@ -186,20 +198,18 @@ function apply_patch_file() {
 
 
 function load_pkg_config() {
-  local -r PKG="$1"; shift
+  local -r CFG="$1"; shift
 
-  local cfg=""
+  local -r CFG_FILE="$PKG_CFG_DIR/${CFG}.sh"
 
-  if [ -f "$PKG_CFG_DIR/$PKG.sh" ]; then
-    cfg="$PKG_CFG_DIR/$PKG.sh"
-  else
-    cfg="$(find "$PKG_CFG_DIR" -maxdepth 1 -name "${PKG%%-*}*.sh" -type f | sort | head -n 1)"
+  if [ -z "$CFG" ] || [ ! -f "$CFG_FILE" ]
+  then
+    echo "This is strange, the configuration file does not exist: $CFG_FILE"
+    exit 1
   fi
 
-  if [ -n "$cfg" ]; then
-    echo "Loading package config: $cfg"
-    source "$cfg"
-  fi
+  echo "Loading configuration: $CFG"
+  source "$CFG_FILE"
 }
 
 # Run a hook
@@ -213,37 +223,23 @@ run_hook() {
 }
 
 # Build in a subshell (isolated environment for each build)
-function build_pkg() (
-  local -r PKG="$1"; local -r BKIND=$2; local -r TRG="$3"; local -r NJOBS=$4; shift 4
+function process_cfg() (
+  local -r CFG="$1"; local -r BKIND=$2; local -r TRG="$3"; local -r NJOBS=$4; shift 4
 
   # Gera loggið læsilegra
-  if [ "$PARALLEL_LOOP" -ne 0 -a -n "${PARALLEL_LOOP:-}" ]
+  if [ -n "${PARALLEL_LOOP:-}" ] && [ "$PARALLEL_LOOP" -ne 0 ]
   then
-    exec > >(sed "s/^/[$PKG:$TRG:$BKIND] /")
+    exec > >(sed "s/^/[$CFG:$TRG:$BKIND] /")
     exec 2>&1
   fi
 
-  # Find name of archive with and without suffix
-  mapfile -d '' -t pkg_tars < <(
-    find "$PKG_TAR_DIR" -maxdepth 1 -name "${PKG}*.tar.*" -type f -print0 | sort -z
-  )
-  if [ "${#pkg_tars[@]}" -ne 1 ]
-  then
-    printf 'Expected exactly one tarball for %s, found %d\n' "$PKG" "${#pkg_tars[@]}" >&2
-    printf '  %s\n' "${pkg_tars[@]}" >&2
-    exit 1
-  fi
-  local -r PKG_TAR="${pkg_tars[0]}"
-  local -r SPKG="$(basename "${PKG_TAR%%.tar.*}")"
-  unset pkg_tars
-
   # Build, patch and install directories
+  local -r PKG_SRC="$PKG_BLD_DIR/$TRG/$BKIND/src/$CFG"
+  local -r PKG_BLD="$PKG_BLD_DIR/$TRG/$BKIND/build/$CFG"
   local -r PKG_INS="$PKG_INS_DIR/$TRG/$BKIND"
-  local -r PKG_BLD="$PKG_BLD_DIR/$TRG/$BKIND/build/$SPKG"
-  local -r PKG_SRC="$PKG_BLD_DIR/$TRG/$BKIND/src/$SPKG"
-  mkdir -p -- "$PKG_SRC" "$PKG_INS" "$PKG_BLD"
+  mkdir -p -- "$PKG_SRC" "$PKG_BLD" "$PKG_INS"
 
-  BIN="$INSTALL_DIRECTORY/cross/$TRG/bin"
+  local -r BIN="$INSTALL_DIRECTORY/cross/$TRG/bin"
   export PATH="$BIN:$PATH"
   export CC="$TRG-gcc"
   export CXX="$TRG-g++"
@@ -255,17 +251,9 @@ function build_pkg() (
   export PKG_CONFIG_LIBDIR="$PKG_INS/lib/pkgconfig:$PKG_INS/lib64/pkgconfig:$PKG_INS/share/pkgconfig"
   export PKG_CONFIG_PATH=
 
-  # Collect for deleting the temporary directory on exit
-  if [ "$DELETE_PKG_BLD" -ne 0 -a -n "${DELETE_PKG_BLD:-}" ]
-  then
-    temp_dir="$temp_dir $PKG_BLD"
-  fi
-  if [ "$DELETE_PKG_SRC" -ne 0 -a -n "${DELETE_PKG_SRC:-}" ]
-  then
-    temp_dir="$temp_dir $PKG_SRC"
-  fi
-
   # Define variables for the meson ini file
+  local cpu_family=''
+  local cpu=''
   case "$TRG" in
   x86_64-*)
     cpu_family="x86_64"
@@ -280,13 +268,13 @@ function build_pkg() (
   local -r MESON_CROSS_FILE="$PKG_BLD_DIR/$TRG/meson-$TRG.ini"
   if [ ! -f $MESON_CROSS_FILE -o $MESON_CROSS_FILE -ot $INSTALL_DIRECTORY/cross/$TRG ]
   then
-    cat > "$MESON_CROSS_FILE" <<EOF
+    cat > "$MESON_CROSS_FILE" <<EOD
 [binaries]
-c = '$TRG-gcc'
-cpp = '$TRG-g++'
-ar = '$TRG-ar'
-strip = '$TRG-strip'
-windres = '$TRG-windres'
+c = '$CC'
+cpp = '$CXX'
+ar = '$AR'
+strip = '$STRIP'
+windres = '$WINDRES'
 pkg-config = '/usr/bin/pkg-config'
 
 [host_machine]
@@ -297,13 +285,38 @@ endian = 'little'
 
 [properties]
 needs_exe_wrapper = true
-EOF
+EOD
   fi
-  unset cpu_family cpu
+  unset cpu
 
-  # Load available information about how to compile static and shared libraries
-  # for current package
-  load_pkg_config "$PKG"
+  local -r CMAKE_TOOLCHAIN_FILE="$PKG_BLD_DIR/$TRG/toolchain-$TRG.cmake"
+  if [ ! -f $CMAKE_TOOLCHAIN_FILE -o $CMAKE_TOOLCHAIN_FILE -ot $INSTALL_DIRECTORY/cross/$TRG ]
+  then
+    cat > "$CMAKE_TOOLCHAIN_FILE" <<EOD
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR $cpu_family)
+
+set(CMAKE_C_COMPILER   "$BIN/$CC")
+set(CMAKE_CXX_COMPILER "$BIN/$CXX")
+set(CMAKE_RC_COMPILER  "$BIN/$WINDRES")
+
+set(CMAKE_AR      "$BIN/$AR")
+set(CMAKE_RANLIB  "$BIN/$RANLIB")
+set(CMAKE_STRIP   "$BIN/$STRIP")
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+EOD
+  fi
+  unset cpu_family
+
+  # Load the current configuration with information about the source and how to compile
+  # static and shared libraries
+  load_pkg_config "$CFG"
 
   # Make compilerflags available (note configuration specific additions)
   export CPPFLAGS="-I$PKG_INS/include ${CFG_CPPFLAGS[*]}"
@@ -311,6 +324,25 @@ EOF
   export CXXFLAGS="-I$PKG_INS/include ${CFG_CXXFLAGS[*]}"
   export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 ${CFG_LDFLAGS[*]}"
   export LIBS="${CFG_LIBS[*]}"
+
+  # Find name of archive with and without suffix
+  mapfile -d '' -t pkg_tars < <(
+    find \
+      "$PKG_TAR_DIR" \
+      -maxdepth 1 \
+      -name "${CFG_PKG_NAME}*${CFG_VERSION}*.tar.*" \
+      -type f \
+      -print0 | \
+    sort -z
+  )
+  if [ "${#pkg_tars[@]}" -ne 1 ]
+  then
+    printf 'Expected exactly one tarball for configuration %s, found %d\n  %s\n' \
+      "$CFG" "${#pkg_tars[@]}" "${pkg_tars[@]}" >&2
+    exit 1
+  fi
+  local -r PKG_TAR="${pkg_tars[0]}"
+  unset pkg_tars
 
   # Package extracted into its mutuable source directory, patches
   # applied and any post extraction configuration applied to the code.
@@ -323,7 +355,7 @@ EOF
     do
       apply_patch_file "$ptc" "$PKG_SRC"
     done < <(
-      find "$PKG_PTC_DIR" -maxdepth 1 -iname "${PKG}*.patch" -type f -print0 | sort -z
+      find "$PKG_PTC_DIR" -maxdepth 1 -iname "${CFG}-[0-9]*.patch" -type f -print0 | sort -z
     )
     # Apply specific configuration for this build
     run_hook cfg_post_extract
@@ -335,7 +367,7 @@ EOF
   cd -- "$PKG_BLD"
 
   # Special cases
-#  case "$PKG" in
+#  case "$CFG" in
 #  zlib*)
 #    CHOST="$TRG" \
 #    "$PKG_SRC/configure" \
@@ -640,6 +672,7 @@ EOF
   case "$build_system" in
   "custom")
     run_hook cfg_custom_build
+    run_hook cfg_post_install
     ;;
   "autotools")
     if [ "${#CFG_AUTOTOOLS_BOOTSTRAP[@]}" -gt 0 ]
@@ -666,17 +699,17 @@ EOF
     run_hook cfg_post_configure
     if [ -z "${CFG_CUSTOM_BUILD:-}" ]
     then
-      make -j "$NJOBS" "${CFG_MAKE_BUILD_OPTS[@]}" || comp_fail "failed building $PKG"
+      make -j "$NJOBS" "${CFG_MAKE_BUILD_OPTS[@]}" || comp_fail "failed building for $CFG"
     fi
     run_hook cfg_post_build
     if [ -z "${CFG_CUSTOM_INSTALL:-}" ]
     then
-      make install "${CFG_MAKE_INSTALL_OPTS[@]}" || comp_fail "failed installing $PKG"
+      make install "${CFG_MAKE_INSTALL_OPTS[@]}" || comp_fail "failed installing for $CFG"
     fi
     run_hook cfg_post_install
     ;;
   "meson")
-    [ ${#CFG_MESON_ENV[@]} -gt 0 ] && env "${CFG_MESON_ENV[@]}"
+    env "${CFG_MESON_ENV[@]}" \
     meson setup "$PKG_BLD" "$PKG_SRC" \
       --cross-file "$MESON_CROSS_FILE" \
       --wrap-mode=nofallback \
@@ -684,19 +717,62 @@ EOF
       --default-library "$BKIND" \
       --buildtype release \
       "${CFG_MESON_OPTS[@]}"
-    ninja -j "$NJOBS" -C "$PKG_BLD" && ninja -C "$PKG_BLD" install || \
-      comp_fail "failed compiling $PKG"
+    run_hook cfg_post_configure
+    ninja -j "$NJOBS" -C "$PKG_BLD" || comp_fail "failed compiling for $CFG"
+    run_hook cfg_post_build
+    ninja -j "$NJOBS" -C "$PKG_BLD" install || comp_fail "failed installing for $CFG"
+    run_hook cfg_post_install
     ;;
   "cmake")
+    cmake \
+      -S "$PKG_SRC" \
+      -B "$PKG_BLD" \
+      -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
+      -DBUILD_SHARED_LIBS=$([ "$BKIND" = "${BUILD_KINDS[0]}" ] && echo OFF || echo ON) \
+      -DCMAKE_PREFIX_PATH="$PKG_INS" \
+      -DCMAKE_FIND_ROOT_PATH="$PKG_INS" \
+      -DCMAKE_INSTALL_PREFIX="$PKG_INS" \
+      -DCMAKE_BUILD_TYPE=Release \
+      "${CFG_CMAKE_CONFIGURE_OPTS[@]}"
+    run_hook cfg_post_configure
+    cmake \
+      --build "$PKG_BLD" \
+      --config Release \
+      --parallel "$NJOBS" \
+      "${CFG_CMAKE_BUILD_OPTS[@]}"
+    run_hook cfg_post_build
+    cmake \
+      --install "$PKG_BLD" \
+      --config Release \
+      "${CFG_CMAKE_INSTALL_OPTS[@]}"
+    run_hook cfg_post_install
     ;;
   *)
     echo "Consider supplying a config file in ./src/pkg/cfg/"
     exit 1
     ;;
   esac
+
+  # Collect for deleting on exit
+  if [ -n "${DELETE_PKG_SRC:-}" ] && [ "$DELETE_PKG_SRC" -ne 0 ]
+  then
+    printf '%s\0' "$PKG_SRC" >> "$CLEANUP_LIST"
+  fi
+  if [ -n "${DELETE_PKG_BLD:-}" ] && [ "$DELETE_PKG_BLD" -ne 0 ]
+  then
+    printf '%s\0' "$PKG_BLD" >> "$CLEANUP_LIST"
+  fi
+  if [ -n "${DELETE_MESON_CONF:-}" ] && [ "$DELETE_MESON_CONF" -ne 0 ]
+  then
+    printf '%s\0' "$MESON_CROSS_FILE" >> "$CLEANUP_LIST"
+  fi
+  if [ -n "${DELETE_CMAKE_CONF:-}" ] && [ "$DELETE_CMAKE_CONF" -ne 0 ]
+  then
+    printf '%s\0' "$CMAKE_TOOLCHAIN_FILE" >> "$CLEANUP_LIST"
+  fi
 )
 
-for pkg in "${PKGS_TO_COMPILE[@]}"
+for cfg in "${CFG_ORDER[@]}"
 do
   declare prc=''
   declare pid=''
@@ -708,12 +784,12 @@ do
     do
       (
         echo
-        echo "Building $bkind $pkg for $trg"
+        echo "Processing configuration $cfg ($bkind build on $trg)"
         echo
-        build_pkg "$pkg" "$bkind" "$trg" "$NCRS_PER_RUN"
+        process_cfg "$cfg" "$bkind" "$trg" "$NCRS_PER_RUN"
       ) &
       pid=$!
-      pid_to_job["$pid"]="$pkg:$trg:$bkind"
+      pid_to_job["$pid"]="$cfg:$trg:$bkind"
       while [ "${#pid_to_job[@]}" -ge "$PARALLEL_RUNS" ]
       do
         if ! wait -n -p prc
