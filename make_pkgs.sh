@@ -2,16 +2,22 @@
 set -euo pipefail
 
 # Optional behaviour
-declare -r DELETE_PKG_SRC=0 # Delete source directory after compilation (no=0, yes=1)
+declare -r DELETE_PKG_SRC=1 # Delete source directory after compilation (no=0, yes=1)
 declare -r DELETE_PKG_BLD=1 # Delete build directory after compilation (no=0, yes=1)
-declare -r DELETE_MESON_CONF=0 # Delete meson ini file
-declare -r DELETE_CMAKE_CONF=0 # Delete cmake toolchain file
+declare -r DELETE_MESON_CONF=1 # Delete meson ini file
+declare -r DELETE_CMAKE_CONF=1 # Delete cmake toolchain file
 declare -r PARALLEL_LOOP=1  # Parallelise the loop over build kinds (e.g. 32bit, 64bit)
                             # and targets (e.g. i686 mingw, x86_64 mingw) (no=0, yes=1)
 
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/etc/common.sh"
 unset script_dir
+
+# Define a trash bin for temporary directories and files to be
+# deleted on exit from this script.
+# Add to this bin with 'put_into_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" dir_or_file, ...'
+declare -r AFTER_ALL_BUILDS_TRASH_BIN="$(mktemp -q)"
+trap 'empty_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN"' EXIT
 
 # Constant initialisation
 declare -ra BUILD_KINDS=([0]="static" [1]="shared")
@@ -60,25 +66,6 @@ function usage() {
   exit 1
 }
 
-# Deletes temporary dirctories and files on exit
-declare -r CLEANUP_LIST="$(mktemp -q)"
-function cleanup() {
-  local -a paths=()
-
-  if [ -f "$CLEANUP_LIST" ]
-  then
-    mapfile -d '' -t paths < "$CLEANUP_LIST"
-    rm -f -- "$CLEANUP_LIST"
-  fi
-
-  if [ "${#paths[@]}" -gt 0 ]
-  then
-    rm -rf -- "${paths[@]}"
-    printf 'deleted the following directories/files: %s\n\n' "${paths[*]}"
-  fi
-}
-trap cleanup EXIT
-
 # Argument handling
 if [ $# -lt 1 ]
 then
@@ -112,74 +99,6 @@ do
 done
 unset cfg found cfg_full cfgs
 
-# Helper functions
-function setup_gtk_env() {
-  local -r PREFIX="$1"; shift
-
-  export GLIB_COMPILE_RESOURCES="$(command -v glib-compile-resources)"
-  export GLIB_COMPILE_SCHEMAS="$(command -v glib-compile-schemas)"
-  export GLIB_GENMARSHAL="$(command -v glib-genmarshal)"
-  export GLIB_MKENUMS="$(command -v glib-mkenums)"
-
-  export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:$PREFIX/lib64/pkgconfig:$PREFIX/share/pkgconfig"
-  export PANGO_CFLAGS="$(pkg-config --cflags pangocairo pangoft2 pangowin32)"
-
-  export PANGO_LIBS="-L$PREFIX/lib -L$PREFIX/lib64 \
-    -Wl,--start-group \
-    -lpangocairo-1.0 -lpangowin32-1.0 -lpango-1.0 \
-    -lgio-2.0 -lgobject-2.0 -lgmodule-2.0 -lglib-2.0 \
-    -lharfbuzz -lfribidi -lcairo -lfontconfig -lfreetype \
-    -lpng16 -lpixman-1 -lz -lexpat \
-    -lffi -lpcre2-8 -lintl -latomic \
-    -lws2_32 -lwinmm -lshlwapi -ldnsapi -liphlpapi \
-    -lgdi32 -lmsimg32 -ldwrite \
-    -Wl,--end-group"
-
-  export CFLAGS="$CFLAGS -DATK_STATIC_COMPILATION -DCAIRO_STATIC_BUILD -DCAIRO_WIN32_STATIC_BUILD"
-  export CXXFLAGS="$CXXFLAGS -DATK_STATIC_COMPILATION -DCAIRO_STATIC_BUILD -DCAIRO_WIN32_STATIC_BUILD"
-  export LIBS="-Wl,--allow-multiple-definition $PANGO_LIBS -lkernel32 -luser32 -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32"
-}
-
-function patch_gtk_3_24_32() {
-  local -r PKG_SRC="$1"; shift
-
-  sed -i \
-    's/gtk_widget_queue_resize (label);/gtk_widget_queue_resize (GTK_WIDGET (label));/' \
-    "$PKG_SRC/gtk/gtklabel.c"
-
-  sed -i \
-    's/gdouble _gtk_get_slowdown ();/gdouble _gtk_get_slowdown (gdouble factor);/' \
-    "$PKG_SRC/gtk/gtkprivate.h"
-
-  sed -i \
-    's/_gtk_get_slowdown ()/_gtk_get_slowdown (1.0)/g' \
-    "$PKG_SRC/gtk/inspector/visual.c"
-
-  sed -i \
-    's/CreateDialogIndirectW (NULL, template, hwndOwner, measure_dialog_procedure)/CreateDialogIndirectW (NULL, (LPCDLGTEMPLATEW) template, hwndOwner, measure_dialog_procedure)/' \
-    "$PKG_SRC/gtk/gtkprintoperation-win32.c"
-
-  sed -i \
-    's/page\.pResource = template;/page.pResource = (LPCDLGTEMPLATEW) template;/' \
-    "$PKG_SRC/gtk/gtkprintoperation-win32.c"
-
-  sed -i '1s|^.*$|#!/usr/bin/env python3|' \
-    "$PKG_SRC/gtk/generate-uac-manifest.py"
-  chmod +x "$PKG_SRC/gtk/generate-uac-manifest.py"
-
-  perl -0pi -e 's/static int check_dir_mtime\s*\(\s*const char\s*\*dir,\s*const GStatBuf\s*\*sb,\s*int\s*tf\s*\)/static int check_dir_mtime (const char *dir, const struct stat *sb, int tf)/s' \
-    "$PKG_SRC/gtk/updateiconcache.c"
-
-  # Patch for tests
-  sed -i \
-  's/gdk_event_get_source_device (event)/gdk_event_get_source_device ((GdkEvent *) event)/g' \
-  "$PKG_SRC/tests/testinput.c"
-
-  find "$PKG_SRC" -name Makefile.[ai][mn] -exec \
-    sed -i \
-    's%^\([ \t]*\)\(test -n .*update_icon_cache.*\)$%\1#\2%' {} \;
-}
-
 # Apply patch
 function apply_patch_file() {
   local -r PTC="$1"; local -r PKG_SRC="$2"; shift 2
@@ -196,7 +115,7 @@ function apply_patch_file() {
   fi
 }
 
-
+# Load configuration file
 function load_pkg_config() {
   local -r CFG="$1"; shift
 
@@ -233,11 +152,27 @@ function process_cfg() (
     exec 2>&1
   fi
 
+  # Define a trash bin for temporary directories and files to be
+  # deleted on exit from this subshell
+  # Add to this bin with 'put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" dir_or_file, ...'
+  declare -r WITHIN_BUILD_TRASH_BIN="$(mktemp -q)"
+  trap 'empty_trash_bin "$WITHIN_BUILD_TRASH_BIN"' EXIT
+
   # Build, patch and install directories
   local -r PKG_SRC="$PKG_BLD_DIR/$TRG/$BKIND/src/$CFG"
   local -r PKG_BLD="$PKG_BLD_DIR/$TRG/$BKIND/build/$CFG"
   local -r PKG_INS="$PKG_INS_DIR/$TRG/$BKIND"
   mkdir -p -- "$PKG_SRC" "$PKG_BLD" "$PKG_INS"
+
+  # Collect for deleting on exit
+  if [ -n "${DELETE_PKG_SRC:-}" ] && [ "$DELETE_PKG_SRC" -ne 0 ]
+  then
+    put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" "$PKG_SRC"
+  fi
+  if [ -n "${DELETE_PKG_BLD:-}" ] && [ "$DELETE_PKG_BLD" -ne 0 ]
+  then
+    put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" "$PKG_BLD"
+  fi
 
   local -r BIN="$INSTALL_DIRECTORY/cross/$TRG/bin"
   export PATH="$BIN:$PATH"
@@ -265,10 +200,13 @@ function process_cfg() (
     ;;
   esac
 
-  local -r MESON_CROSS_FILE="$PKG_BLD_DIR/$TRG/meson-$TRG.ini"
-  if [ ! -f $MESON_CROSS_FILE -o $MESON_CROSS_FILE -ot $INSTALL_DIRECTORY/cross/$TRG ]
-  then
-    cat > "$MESON_CROSS_FILE" <<EOD
+  function create_meson_cross_file() {
+    [ $# -eq 1 ] || return 1
+    local -r CROSS_FILE="$1"; shift
+    if [ ! -f "$CROSS_FILE" ] || \
+       [ "$CROSS_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]
+    then
+      cat > "$CROSS_FILE" <<EOD
 [binaries]
 c = '$CC'
 cpp = '$CXX'
@@ -286,13 +224,26 @@ endian = 'little'
 [properties]
 needs_exe_wrapper = true
 EOD
-  fi
+    fi
+  }
+  local -r MESON_CROSS_FILE="$PKG_BLD_DIR/$TRG/meson-$TRG.ini"
+  local -r MESON_CROSS_LOCK="$PKG_BLD_DIR/$TRG.meson.lock"
+  # Generate Meson cross file atomically to avoid concurrent writers.
+  lock_run "$MESON_CROSS_LOCK" \
+    create_meson_cross_file "$MESON_CROSS_FILE"
   unset cpu
-
-  local -r CMAKE_TOOLCHAIN_FILE="$PKG_BLD_DIR/$TRG/toolchain-$TRG.cmake"
-  if [ ! -f $CMAKE_TOOLCHAIN_FILE -o $CMAKE_TOOLCHAIN_FILE -ot $INSTALL_DIRECTORY/cross/$TRG ]
+  if [ -n "${DELETE_MESON_CONF:-}" ] && [ "$DELETE_MESON_CONF" -ne 0 ]
   then
-    cat > "$CMAKE_TOOLCHAIN_FILE" <<EOD
+    put_into_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" "$MESON_CROSS_FILE"
+  fi
+
+  function create_cmake_toolchain_file() {
+    [ $# -eq 1 ] || return 1
+    local -r TOOLCHAIN_FILE="$1"; shift
+    if [ ! -f "$TOOLCHAIN_FILE" ] || \
+       [ "$TOOLCHAIN_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]
+    then
+      cat > "$TOOLCHAIN_FILE" <<EOD
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR $cpu_family)
 
@@ -311,6 +262,16 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 EOD
+    fi
+  }
+  local -r CMAKE_TOOLCHAIN_FILE="$PKG_BLD_DIR/$TRG/toolchain-$TRG.cmake"
+  local -r CMAKE_TOOLCHAIN_LOCK="$PKG_BLD_DIR/$TRG.cmake.lock"
+  # Generate Cmake toolchain file atomically to avoid concurrent writers.
+  lock_run "$CMAKE_TOOLCHAIN_LOCK" \
+    create_cmake_toolchain_file "$CMAKE_TOOLCHAIN_FILE"
+  if [ -n "${DELETE_CMAKE_CONF:-}" ] && [ "$DELETE_CMAKE_CONF" -ne 0 ]
+  then
+    put_into_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" "$CMAKE_TOOLCHAIN_FILE"
   fi
   unset cpu_family
 
@@ -366,313 +327,16 @@ EOD
   # Enter build directory
   cd -- "$PKG_BLD"
 
-  # Special cases
-#  case "$CFG" in
-#  zlib*)
-#    CHOST="$TRG" \
-#    "$PKG_SRC/configure" \
-#      --prefix="$PKG_INS"
-#    ;;
-#  pixman*)
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --buildtype release
-#    ;;
-#  expat*)
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --without-docbook
-#    ;;
-#  cairo*)
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Dspectre=disabled \
-#      -Dglib=enabled \
-#      -Ddwrite=disabled \
-#      -Dfreetype=enabled \
-#      -Dfontconfig=enabled \
-#      -Dpng=enabled \
-#      -Dzlib=enabled
-#
-#    ninja -j "$NJOBS" -C "$PKG_BLD"
-#    ninja -C "$PKG_BLD" install
-#
-#    # Cairo is installed as a static library, so consumers must not use dllimport.
-#    for pc in "$PKG_INS/lib/pkgconfig/cairo.pc" "$PKG_INS/lib64/pkgconfig/cairo.pc"
-#    do
-#      if [ -f "$pc" ] && ! grep -q 'CAIRO_STATIC_BUILD' "$pc"; then
-#        sed -i \
-#          's/^Cflags: \(.*\)$/Cflags: \1 -DCAIRO_STATIC_BUILD -DCAIRO_WIN32_STATIC_BUILD/' \
-#          "$pc"
-#      fi
-#    done
-#    return
-#    ;;
-#  harfbuzz*)
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Dicu=disabled \
-#      -Dgraphite=disabled \
-#      -Dglib=disabled \
-#      -Ddocs=disabled
-#    ;;
-#  pango*)
-#    export CFLAGS="$CFLAGS -DCAIRO_WIN32_STATIC_BUILD -DCAIRO_STATIC_BUILD"
-#    export CXXFLAGS="$CXXFLAGS -DCAIRO_WIN32_STATIC_BUILD -DCAIRO_STATIC_BUILD"
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz -lexpat"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Dfontconfig=enabled \
-#      -Dfreetype=enabled \
-#      -Dcairo=enabled \
-#      -Dintrospection=disabled \
-#      -Dgtk_doc=false \
-#      -Dinstall-tests=false \
-#      -Dlibthai=disabled \
-#      -Dxft=disabled
-#  ;;
-#  glib*)
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Dintrospection=disabled \
-#      -Dnls=disabled \
-#      -Dgtk_doc=false \
-#      -Dman-pages=disabled \
-#      -Dsysprof=disabled \
-#      -Ddtrace=false
-#    ;;
-#  atk-*)
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lz"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Dintrospection=false
-#
-#    ninja -j "$NJOBS" -C "$PKG_BLD"
-#    ninja -C "$PKG_BLD" install
-#
-#    sed -i \
-#      's/^Cflags: \(.*\)$/Cflags: \1 -DATK_STATIC_COMPILATION/' \
-#      "$PKG_INS/lib/pkgconfig/atk.pc"
-#    return
-#    ;;
-#  gdk-pixbuf*)
-#    export LDFLAGS="-L$PKG_INS/lib -L$PKG_INS/lib64 -lpng16 -lz -lexpat"
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Dintrospection=disabled \
-#      -Dgtk_doc=false \
-#      -Dman=false \
-#      -Dinstalled_tests=false
-#    ;;
-#  libepoxy*)
-#    meson setup "$PKG_BLD" "$PKG_SRC" \
-#      --cross-file "$MESON_CROSS_FILE" \
-#      --wrap-mode=nofallback \
-#      --prefix "$PKG_INS" \
-#      --default-library $BKIND \
-#      --buildtype release \
-#      -Ddocs=false
-#    ;;
-#  gtk+*)
-#    patch_gtk_3_24_32 $PKG_SRC
-#    setup_gtk_env $PKG_INS
-#
-#    PANGO_CFLAGS="$PANGO_CFLAGS" PANGO_LIBS="$PANGO_LIBS" \
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --disable-cups \
-#      --disable-glibtest \
-#      --disable-demos \
-#      --disable-installed-tests
-#    ;;
-#  curl*)
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --with-schannel \
-#      --without-gnutls \
-#      --without-mbedtls \
-#      --without-wolfssl \
-#      --without-zstd \
-#      --without-brotli \
-#      --without-libpsl \
-#      --without-nghttp2 \
-#      --without-ngtcp2 \
-#      --without-nghttp3 \
-#      --without-quiche \
-#      --disable-ldap \
-#      --disable-ldaps \
-#      --disable-manual
-#    ;;
-#  libxml2*)
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --without-python
-#    ;;
-#  libcroco*)
-#    export LIBS="-lole32 -luuid -lshlwapi -lws2_32 -lintl -lpcre2-8 -lffi -lz -lm"
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND
-#    ;;
-#  librsvg*)
-#    perl -0pi -e \
-#      's/rsvg_xml_noerror\s*\(\s*void\s*\*data,\s*xmlErrorPtr\s*error\s*\)/rsvg_xml_noerror (void *data, const xmlError *error)/s' \
-#      "$PKG_SRC/rsvg-css.c"
-#  
-#    export LIBS="-lole32 -luuid -lshlwapi -lws2_32 -lintl -lpcre2-8 -lffi -lz -lm"
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --enable-introspection=no \
-#      --disable-gtk-doc \
-#      --disable-pixbuf-loader \
-#      --disable-tools
-#
-#    sed -i \
-#      's/rsvg-view-3$(EXEEXT)//g; s/rsvg_view_3-test-display\.\$(OBJEXT)//g' \
-#      "$PKG_BLD/Makefile"
-#    ;;
-#  libwebsockets*)
-#    sed -i \
-#      's/-l:libwebsockets${CMAKE_STATIC_LIBRARY_SUFFIX}/-l:libwebsockets_static${CMAKE_STATIC_LIBRARY_SUFFIX}/' \
-#      "$PKG_SRC/lib/CMakeLists.txt"
-#
-#    local LWS_SHARED=OFF
-#    local LWS_STATIC=OFF
-#    if [ "$BKIND" = "${BUILD_KINDS[1]}" ]; then
-#      LWS_SHARED=ON
-#    else
-#      LWS_STATIC=ON
-#    fi
-#
-#    cmake "$PKG_SRC" \
-#      -DCMAKE_SYSTEM_NAME=Windows \
-#      -DCMAKE_C_COMPILER="$CC" \
-#      -DCMAKE_AR="$BIN/$AR" \
-#      -DCMAKE_RANLIB="$BIN/$RANLIB" \
-#      -DCMAKE_STRIP="$BIN/$STRIP" \
-#      -DCMAKE_INSTALL_PREFIX="$PKG_INS" \
-#      -DCMAKE_PREFIX_PATH="$PKG_INS" \
-#      -DCMAKE_FIND_ROOT_PATH="$PKG_INS" \
-#      -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-#      -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
-#      -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-#      -DCMAKE_BUILD_TYPE=Release \
-#      -DLWS_WITH_SHARED=$LWS_SHARED \
-#      -DLWS_WITH_STATIC=$LWS_STATIC \
-#      -DLWS_WITH_SSL=OFF \
-#      -DLWS_WITHOUT_TESTAPPS=ON \
-#      -DLWS_WITHOUT_TEST_CLIENT=ON \
-#      -DLWS_WITHOUT_TEST_SERVER=ON \
-#      -DLWS_WITHOUT_TEST_PING=ON \
-#      -DLWS_WITHOUT_TEST_SERVER_EXTPOLL=ON \
-#      -DLWS_WITH_ZLIB=ON
-#    ;;
-#  libao*)
-#    cd -- "$PKG_SRC"
-#
-#    ./autogen.sh
-#    BUILD_TYPE="aconf"
-#
-#    cd -- "$PKG_BLD"
-#
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --disable-esd \
-#      --disable-arts \
-#      --disable-nas \
-#      --disable-pulse \
-#      --disable-macosx \
-#      --disable-sndio
-#    ;;
-#  mpg123*)
-#    sed -i \
-#      's/dump_close(sd);/dump_close();/' \
-#        "$PKG_SRC/src/streamdump.c"
-#
-#    "$PKG_SRC/configure" \
-#      --host="$TRG" \
-#      --prefix="$PKG_INS" \
-#      --disable-${BUILD_KINDS_REV[$BKIND]} \
-#      --enable-$BKIND \
-#      --disable-modules \
-#      --with-default-audio=win32
-#    ;;
-#  *)
-#    if [ "X$BUILD_TYPE" = "Xaconf" ]
-#    then
-#      "$PKG_SRC/configure" \
-#        --host="$TRG" \
-#        --prefix="$PKG_INS" \
-#        --disable-${BUILD_KINDS_REV[$BKIND]} \
-#        --enable-$BKIND
-#    elif [ "X$BUILD_TYPE" = "Xmeson" ]
-#    then
-#      meson setup "$PKG_BLD" "$PKG_SRC" \
-#        --cross-file "$MESON_CROSS_FILE" \
-#        --wrap-mode=nofallback \
-#        --prefix "$PKG_INS" \
-#        --default-library $BKIND \
-#        --buildtype release \
-#        -Ddocs=false
-#    fi
-#    ;;
-#  esac
+  # Determine the building system used.
+  # Can be set differently for shared and static builds with
+  # CFG_BUILD_SYSTEM_STATIC and CFG_BUILD_SYSTEM_SHARED or
+  # the same for both with CFG_BUILD_SYSTEM.
   local build_system_case="CFG_BUILD_SYSTEM_${BKIND^^}"
   local build_system="${!build_system_case:-${CFG_BUILD_SYSTEM:-}}"
   case "$build_system" in
   "custom")
+    # All other hooks are run inside this function
     run_hook cfg_custom_build
-    run_hook cfg_post_install
     ;;
   "autotools")
     if [ "${#CFG_AUTOTOOLS_BOOTSTRAP[@]}" -gt 0 ]
@@ -752,28 +416,11 @@ EOD
     exit 1
     ;;
   esac
-
-  # Collect for deleting on exit
-  if [ -n "${DELETE_PKG_SRC:-}" ] && [ "$DELETE_PKG_SRC" -ne 0 ]
-  then
-    printf '%s\0' "$PKG_SRC" >> "$CLEANUP_LIST"
-  fi
-  if [ -n "${DELETE_PKG_BLD:-}" ] && [ "$DELETE_PKG_BLD" -ne 0 ]
-  then
-    printf '%s\0' "$PKG_BLD" >> "$CLEANUP_LIST"
-  fi
-  if [ -n "${DELETE_MESON_CONF:-}" ] && [ "$DELETE_MESON_CONF" -ne 0 ]
-  then
-    printf '%s\0' "$MESON_CROSS_FILE" >> "$CLEANUP_LIST"
-  fi
-  if [ -n "${DELETE_CMAKE_CONF:-}" ] && [ "$DELETE_CMAKE_CONF" -ne 0 ]
-  then
-    printf '%s\0' "$CMAKE_TOOLCHAIN_FILE" >> "$CLEANUP_LIST"
-  fi
 )
 
 for cfg in "${CFG_ORDER[@]}"
 do
+  declare after_config_build_trash_bin="$(mktemp -q)"
   declare prc=''
   declare pid=''
   declare -a failed=()
@@ -798,6 +445,11 @@ do
         fi
         unset 'pid_to_job[$prc]'
       done
+      # Exit the loop on error if not parallelising
+      if [ "$PARALLEL_LOOP" -eq 0 ] && [ ${#failed[@]} -gt 0 ]
+      then
+        break 2
+      fi
     done
   done
   while [ "${#pid_to_job[@]}" -gt 0 ]
@@ -813,5 +465,6 @@ do
     echo "${#failed[@]} packages failed to compile: ${failed[*]}"
     exit 1
   fi
-  unset prc pid failed pid_to_job
+  empty_trash_bin "$after_config_build_trash_bin"
+  unset prc pid failed pid_to_job after_config_build_trash_bin
 done
