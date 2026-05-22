@@ -1,12 +1,17 @@
 #!/bin/bash
+set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/etc/common.sh"
+script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/etc/common.sh"
+unset script_dir
 
 # Constant initialisation
-declare -rA DLLS=([${TRG64}]="libgcc_s_seh-1.dll" [${TRG32}]="libgcc_s_sjlj-1.dll")
-declare -r VERSIONS="$(ls -m $SOURCE_DIRECTORY/gcc-*.tar.gz | sed -e 's#^.*-##' -e 's#.tar.gz##' | \
-  tr '\n' ' ' | sed -e 's#  *$#,#') git"
+declare -rA DLLS=(["${TRG64}"]="libgcc_s_seh-1.dll" ["${TRG32}"]="libgcc_s_sjlj-1.dll")
+declare -r VERSIONS="$(
+  find -- "$SOURCE_DIRECTORY/cpl" -maxdepth 1 -name 'gcc-*.tar.gz' -print0 | \
+    sed -ze 's#^.*-##' -e 's#\.tar\.gz#, #' | \
+    tr -d '\0'
+) git"
 
 # Function definitions
 function usage() {
@@ -14,161 +19,260 @@ function usage() {
   echo " usage: $0 gcc-version"
   echo 
   echo " available gcc versions: $VERSIONS"
-  #  | sed -e 's#, $##'
   echo 
   exit 1
 }
 
 # Argument handling
-if [ $# -ne 1 ]
+if [[ $# -ne 1 ]]
 then
   usage
 fi
 
-declare -r GCC_VERSION=$1; shift
+declare -r GCC_VERSION="$1"; shift
 
-case $VERSIONS in
-  *${GCC_VERSION}*)
-    [[ "$GCC_VERSION" =~ [0-9][0-9]\.[0-9]\.[0-9] ]] || [[ "$GCC_VERSION" =~ "git" ]] || usage
+case "$VERSIONS" in
+  *"${GCC_VERSION}"*)
+    [[ "$GCC_VERSION" =~ [0-9][0-9]\.[0-9]\.[0-9] ]] || [[ "$GCC_VERSION" = "git" ]] || usage
     ;;
   *) usage ;;
 esac
 
-## Prepare sources
+# Prepare sources (delete the gcc symbolic link to force re-extracting of sources)
 echo -e "\nPrepare sources ..."
-if ! readlink -e $SOURCE_DIRECTORY/gcc || [[ "`readlink $SOURCE_DIRECTORY/gcc`" != *"$GCC_VERSION"* ]]
+if ! readlink -e -- "$SOURCE_DIRECTORY/cpl/gcc" || \
+  [[ "$(readlink -- "$SOURCE_DIRECTORY/cpl/gcc")" != *"$GCC_VERSION" ]]
 then
   # mingw-w64
   echo -e "\n mingw-w64..."
-  # First remove the
-  find $SOURCE_DIRECTORY -name mingw-w64-v\* -type d -exec rm -rf {} \; 2>/dev/null # directory
-  rm -f $SOURCE_DIRECTORY/mingw-w64 # and the link.
+  # First remove source directories
+  for d in "$SOURCE_DIRECTORY"/cpl/mingw-w64-v*
+  do
+    [[ -d "$d" ]] || continue
+    rm -rf -- "$d"
+  done
+  unset d
+  rm -f -- "$SOURCE_DIRECTORY/cpl/mingw-w64" # and the link.
   # Select the newest/highest version tar file to explode.
-  MINGW_FN=$(ls -1r $SOURCE_DIRECTORY/mingw-w64-v*.tar.bz2 | head -n 1)
-  if ! tar -C $SOURCE_DIRECTORY -xjf $MINGW_FN
+  declare -r MINGW_FN="$(
+    find "$SOURCE_DIRECTORY/cpl" \
+      -maxdepth 1 \
+      -type f \
+      -name 'mingw-w64-v*.tar.*' | \
+      sort -V | \
+      tail -n 1
+  )"
+  mkdir -- "${MINGW_FN%%.tar.*}"
+  if ! tar --strip-components=1 --directory="${MINGW_FN%%.tar.*}" \
+    -xaf "$MINGW_FN"
   then
+    echo "Unable to extract sources from archive $MINGW_FN" >&2
     exit 1
   fi
   # and cretae a new link.
-  ln -sf ${MINGW_FN%%.tar.bz2} $SOURCE_DIRECTORY/mingw-w64
+  ln -sf -- "$(basename "${MINGW_FN%%.tar.*}")" "$SOURCE_DIRECTORY/cpl/mingw-w64"
 
   # binutils
   echo -e "\n binutils..."
-  # First remove the
-  find $SOURCE_DIRECTORY -type d -name binutils-\* -exec rm -rf {} \; 2>/dev/null # directory
-  rm -f $SOURCE_DIRECTORY/binutils # and the link.
+  # First remove source directories
+  for d in "$SOURCE_DIRECTORY"/cpl/binutils-*
+  do
+    [[ -d "$d" ]] || continue
+    rm -rf -- "$d"
+  done
+  unset d
+  rm -f -- "$SOURCE_DIRECTORY/cpl/binutils" # and the link.
   # Select the newest/highest version tar file to explode.
-  BINUTILS_FN=$(ls -1r $SOURCE_DIRECTORY/binutils-*.tar.bz2 | head -n 1)
-  if ! tar -C $SOURCE_DIRECTORY -xjf $BINUTILS_FN
+  declare -r BINUTILS_FN="$(
+    find "$SOURCE_DIRECTORY/cpl" \
+      -maxdepth 1 \
+      -type f \
+      -name 'binutils-*.tar.*' \
+      | sort -V \
+      | tail -n 1
+  )"
+  mkdir -- "${BINUTILS_FN%%.tar.*}"
+  if ! tar --strip-components=1 --directory="${BINUTILS_FN%%.tar.*}" \
+    -xaf "$BINUTILS_FN"
   then
+    echo "Unable to extract sources from archive $BINUTILS_FN" >&2
     exit 1
   fi
   # and create a new link.
-  ln -sf ${BINUTILS_FN%%.tar.bz2} $SOURCE_DIRECTORY/binutils
+  ln -sf -- "$(basename "${BINUTILS_FN%%.tar.*}")" "$SOURCE_DIRECTORY/cpl/binutils"
 
   # Change gcc version
   echo -e "\n gcc..."
   if [[ "$GCC_VERSION" != "git" ]]
   then
-    #rm -rf $(readlink $SOURCE_DIRECTORY/gcc) # don't delete the previous directory I think ...
-    # First remove the
-    rm -rf $SOURCE_DIRECTORY/gcc-$GCC_VERSION # directory
-    rm -f $SOURCE_DIRECTORY/gcc # and the link.
+    # First remove source directories
+    for d in "$SOURCE_DIRECTORY"/cpl/gcc-*
+    do
+      [[ -d "$d" ]] || continue
+      rm -rf -- "$d"
+    done
+    unset d
+    rm -f -- "$SOURCE_DIRECTORY/cpl/gcc" # and the link.
     # Explode the source tar file.
-    if !  tar -C $SOURCE_DIRECTORY -xzf $SOURCE_DIRECTORY/gcc-$GCC_VERSION.tar.gz
+    mapfile -d '' -t gcc_src_files < <(
+      find "$SOURCE_DIRECTORY/cpl" \
+        -maxdepth 1 \
+        -name "gcc-${GCC_VERSION}.tar.*" \
+        -type f \
+        -print0
+    )
+    case "${#gcc_src_files[@]}" in
+    1)
+      declare -r GCC_FN="${gcc_src_files[0]}"
+      ;;
+    *)
+      echo "Multiple gcc archives found for version ${GCC_VERSION}:" >&2
+      printf '  %s\n' "${gcc_src_files[@]}" >&2
+      exit 1
+      ;;
+    esac
+    unset gcc_src_files
+    mkdir -- "$SOURCE_DIRECTORY/cpl/gcc-$GCC_VERSION"
+    if ! tar --strip-components=1 --directory="$SOURCE_DIRECTORY/cpl/gcc-$GCC_VERSION" \
+      -xaf "$GCC_FN"
     then
+      echo "Unable to extract sources from archive $GCC_FN" >&2
       exit 1
     fi
   else
-    # Update the git repository
-    if ! git -C $SOURCE_DIRECTORY/gcc-$GCC_VERSION pull
+    # Update the git repository.
+    if ! git -C "$SOURCE_DIRECTORY/cpl/gcc-$GCC_VERSION" pull
     then
+      echo "Unable to pull in chnages from git repository gcc-$GCC_VERSION" >&2
       exit 1
     fi
   fi
-  # and cretae a new link.
-  ln -sf gcc-$GCC_VERSION $SOURCE_DIRECTORY/gcc
-  cd $SOURCE_DIRECTORY/gcc
+  # and create a new link.
+  ln -sf -- "gcc-$GCC_VERSION" "$SOURCE_DIRECTORY/cpl/gcc"
+  cd -- "$SOURCE_DIRECTORY/cpl/gcc"
     contrib/download_prerequisites --force
-  cd $PREF
+  cd -- "$PREF"
 
   ## Clean previous build
   echo -e "\nClean previous build..."
-  rm -rf  $BUILD_DIRECTORY/{cross,native}
-  rm -rf  $INSTALL_DIRECTORY/{cross,native}
-  mkdir -p $BUILD_DIRECTORY/{cross,native}/{$TRG32,$TRG64}/{binutils,gcc,mingw-w64}
-  mkdir -p $BUILD_DIRECTORY/cross/{$TRG32,$TRG64}/mingw-w64-headers
-  mkdir -p $INSTALL_DIRECTORY/{cross,native}/{$TRG32,$TRG64}
+  rm -rf -- "$BUILD_DIRECTORY"/{cross,native}
+  rm -rf -- "$INSTALL_DIRECTORY"/{cross,native}
+  mkdir -p -- "$BUILD_DIRECTORY"/{cross,native}/{"$TRG32","$TRG64"}/{binutils,gcc,mingw-w64}
+  mkdir -p -- "$BUILD_DIRECTORY"/cross/{"$TRG32","$TRG64"}/mingw-w64-headers
+  mkdir -p -- "$INSTALL_DIRECTORY"/{cross,native}/{"$TRG32","$TRG64"}
 fi
 
 ## Build
 echo -e "\nBuilding..."
 
-# Function for building target TRG, using NCR parallell processes when making
+# Function for building target TRG, using NJOBS parallell processes when making
 function build_target() {
   [[ $# -eq 2 ]] || return
-  local -r TRG=$1; local -r NCR=$2; shift 2
+  local -r TRG="$1"; local -r NJOBS="$2"; shift 2
 
   # 1. Start with cross-binutils, the first component of the cross-compiler
   echo -e "\n Start with cross-binutils, the first component of the cross-compiler..."
-  cd $BUILD_DIRECTORY/cross/$TRG/binutils
-  [[ -f config.log ]] || ../../../../src/cpl/binutils/configure --prefix=$INSTALL_DIRECTORY/cross/$TRG --target=$TRG --disable-multilib
-  make -j $NCR && make install || comp_fail "cross binutils"
+  cd -- "$BUILD_DIRECTORY/cross/$TRG/binutils"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/binutils/configure \
+    --prefix="$INSTALL_DIRECTORY/cross/$TRG" \
+    --target="$TRG" \
+    --disable-multilib
+  make -j "$NJOBS" && make install || comp_fail "cross binutils"
   # ...and make sure these are found on PATH
-  local -r PATH=$INSTALL_DIRECTORY/cross/$TRG/bin:$PATH
+  local -r PATH="$INSTALL_DIRECTORY/cross/$TRG/bin:$PATH"
 
   # 2. Install the mingw-w64 headers into the target (Windows) sysroot of the cross-compiler
   echo -e "\n Install the mingw-w64 headers into the target (Windows) sysroot of the cross-compiler..."
-  cd $BUILD_DIRECTORY/cross/$TRG/mingw-w64-headers
-  [[ -f config.log ]] || ../../../../src/cpl/mingw-w64/mingw-w64-headers/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/cross/$TRG/$TRG
+  cd -- "$BUILD_DIRECTORY/cross/$TRG/mingw-w64-headers"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/mingw-w64/mingw-w64-headers/configure \
+    --prefix="$INSTALL_DIRECTORY/cross/$TRG/$TRG" \
+    --host="$TRG"
   make install || comp_fail "host mingw-w64-headers"
 
   # 3. With the target headers installed, build the core gcc cross-compiler
   echo -e "\n With the target headers installed, build the core gcc cross-compiler..."
-  cd $BUILD_DIRECTORY/cross/$TRG/gcc
-  [[ -f config.log ]] || ../../../../src/cpl/gcc/configure --prefix=$INSTALL_DIRECTORY/cross/$TRG --target=$TRG --disable-multilib --enable-languages=c,c++,fortran
-  make -j $NCR all-gcc && make install-gcc || comp_fail "cross all-gcc"
+  cd -- "$BUILD_DIRECTORY/cross/$TRG/gcc"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/gcc/configure \
+    --prefix="$INSTALL_DIRECTORY/cross/$TRG" \
+    --target="$TRG" \
+    --disable-multilib \
+    --enable-languages=c,c++,fortran
+  make -j "$NJOBS" all-gcc && make install-gcc || comp_fail "cross all-gcc"
 
   # 4. Build mingw-w64 CRT and install into cross-compiler sysroot
   echo -e "\n Build mingw-w64 CRT and install into cross-compiler sysroot..."
-  cd $BUILD_DIRECTORY/cross/$TRG/mingw-w64
-  [[ -f config.log ]] || ../../../../src/cpl/mingw-w64/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/cross/$TRG/$TRG
+  cd -- "$BUILD_DIRECTORY/cross/$TRG/mingw-w64"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/mingw-w64/configure \
+    --prefix="$INSTALL_DIRECTORY/cross/$TRG/$TRG" \
+    --host="$TRG"
   make && make install || comp_fail "host mingw-w64"
 
   # 5. Finish building the gcc cross-compiler
   echo -e "\n Finish building the gcc cross-compiler..."
-  cd $BUILD_DIRECTORY/cross/$TRG/gcc
-  make -j $NCR && make install || comp_fail "cross gcc"
+  cd -- "$BUILD_DIRECTORY/cross/$TRG/gcc"
+  make -j "$NJOBS" && make install || comp_fail "cross gcc"
 
-  # 6. Build Windows-native binutils
+  # 6. Build winpthreads and install into cross-compiler sysroot
+  echo -e "\n Build winpthreads and install into cross-compiler sysroot..."
+  mkdir -p -- "$BUILD_DIRECTORY/cross/$TRG/winpthreads"
+  cd -- "$BUILD_DIRECTORY/cross/$TRG/winpthreads"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/mingw-w64/mingw-w64-libraries/winpthreads/configure \
+    --prefix="$INSTALL_DIRECTORY/cross/$TRG/$TRG" \
+    --host="$TRG" \
+    --libdir="$INSTALL_DIRECTORY/cross/$TRG/$TRG/lib"
+  make -j "$NJOBS" && make install || comp_fail "cross winpthreads"
+
+  # 7. Build Windows-native binutils
   echo -e "\n Build Windows-native binutils..."
-  cd $BUILD_DIRECTORY/native/$TRG/binutils
-  [[ -f config.log ]] || ../../../../src/cpl/binutils/configure --prefix=$INSTALL_DIRECTORY/native/$TRG --host=$TRG --target=$TRG --disable-multilib
-  make -j $NCR && make install || comp_fail "host binutils"
+  cd -- "$BUILD_DIRECTORY/native/$TRG/binutils"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/binutils/configure \
+    --prefix="$INSTALL_DIRECTORY/native/$TRG" \
+    --host="$TRG" \
+    --target="$TRG" \
+    --disable-multilib
+  make -j "$NJOBS" && make install || comp_fail "host binutils"
 
-  # 7. Build Windows-native gcc
+  # 8. Build Windows-native gcc
   echo -e "\n Build Windows-native gcc..."
-  cd $BUILD_DIRECTORY/native/$TRG/gcc
-  [[ -f config.log ]] || ../../../../src/cpl/gcc/configure --prefix=$INSTALL_DIRECTORY/native/$TRG --host=$TRG --target=$TRG --disable-multilib --enable-languages=c,c++,fortran
-  make -j $NCR && make install || comp_fail "host gcc"
-  mv $INSTALL_DIRECTORY/native/$TRG/lib/${DLLS[$TRG]} $INSTALL_DIRECTORY/native/$TRG/bin/
+  cd -- "$BUILD_DIRECTORY/native/$TRG/gcc"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/gcc/configure \
+    --prefix="$INSTALL_DIRECTORY/native/$TRG" \
+    --host="$TRG" \
+    --target="$TRG" \
+    --disable-multilib \
+    --enable-languages=c,c++,fortran
+  make -j "$NJOBS" && make install || comp_fail "host gcc"
+  local -r DLL="$(
+    find -- "$INSTALL_DIRECTORY/native/$TRG" -name "${DLLS["$TRG"]}" -type f | head -n 1
+  )"
+  [[ -n "$DLL" ]] || comp_fail "missing ${DLLS[$TRG]}"
+  mv -- "$DLL" "$INSTALL_DIRECTORY/native/$TRG/bin/"
 
-  # 8. Build mingw-w64 headers and libs (including winpthreads) and install into native toolchain sysroot
+  # 9. Build mingw-w64 headers and libs (including winpthreads) and install into native toolchain sysroot
   echo -e "\n Build mingw-w64 headers and libs (including winpthreads) and install into native toolchain sysroot..."
-  cd $BUILD_DIRECTORY/native/$TRG/mingw-w64
-  [[ -f config.log ]] || ../../../../src/cpl/mingw-w64/configure --host=$TRG --prefix=$INSTALL_DIRECTORY/native/$TRG/$TRG --with-libraries=winpthreads
+  cd -- "$BUILD_DIRECTORY/native/$TRG/mingw-w64"
+  [[ -f config.log ]] || \
+    ../../../../src/cpl/mingw-w64/configure \
+    --prefix="$INSTALL_DIRECTORY/native/$TRG/$TRG" \
+    --host="$TRG" \
+    --with-libraries=winpthreads
   make && make install || comp_fail "host mingw-w64"
 
-  # 8. Package the native installation folder
+  # 10. Package the native installation folder
   echo -e "\n Package the native installation folder..."
-  cd $INSTALL_DIRECTORY/native
-  zip -r $TRG.zip $TRG
+  cd -- "$INSTALL_DIRECTORY/native"
+  zip --filesync --recurse-paths "$TRG" "$TRG"
 }
 
 # Make everything
-#parallel -j 16 -n 2 build_target -- $TRG32 $NCRS $TRG64 $NCRS
-for TRGS in $TRG32 $TRG64
+for trgs in "${TARGETS[@]}"
 do
-  #sem -j 16 --wait build_target $TRGS $NCRS
-  build_target $TRGS $NCRS
+  build_target "$trgs" "$NCRS"
 done
