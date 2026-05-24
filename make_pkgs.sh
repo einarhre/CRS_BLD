@@ -396,7 +396,7 @@ EOD
     ;;
   "cmake")
     cmake \
-      -S "$PKG_SRC" \
+      -S "$PKG_SRC/$CFG_CMAKE_SRC_DIR" \
       -B "$PKG_BLD" \
       -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
       -DBUILD_SHARED_LIBS=$([ "$BKIND" = "${BUILD_KINDS[0]}" ] && echo OFF || echo ON) \
