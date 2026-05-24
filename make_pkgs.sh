@@ -67,7 +67,7 @@ function usage() {
 }
 
 # Argument handling
-if [ $# -lt 1 ]
+if [[ $# -lt 1 ]]
 then
   usage
 fi
@@ -79,10 +79,10 @@ do
   declare -i found=0
   for cfg_full in "${cfgs[@]}"
   do
-    if [ "$cfg_full" = "${cfg}" ]
+    if [[ "$cfg_full" = "${cfg}" ]]
     then
       ! ((found++)) # "!" is a hack to have "set -e" option ignore the exit status of ((
-      if [ $found -gt 1 ]
+      if [[ $found -gt 1 ]]
       then
         echo "Configuration not unique: $cfg"
         echo
@@ -90,7 +90,7 @@ do
       fi
     fi
   done
-  if [ $found -lt 1 ]
+  if [[ $found -lt 1 ]]
   then
     echo "Configuration not found: $cfg"
     echo
@@ -104,8 +104,8 @@ function apply_patch_file() {
   local -r PTC="$1"; local -r PKG_SRC="$2"; shift 2
   local -r PATCH_HISTORY="$PKG_SRC/.patches_applied"
 
-  if [ -f $PKG_SRC/.patches_applied ] && \
-     [ $(grep -F -m 1 -c -e "$PTC" -- $PATCH_HISTORY) -ge 1 ]
+  if [[ -f $PKG_SRC/.patches_applied ]] && \
+     [[ $(grep -F -m 1 -c -e "$PTC" -- $PATCH_HISTORY) -ge 1 ]]
   then
     echo "Patch has already been applied: $PTC"
   else
@@ -121,7 +121,7 @@ function load_pkg_config() {
 
   local -r CFG_FILE="$PKG_CFG_DIR/${CFG}.sh"
 
-  if [ -z "$CFG" ] || [ ! -f "$CFG_FILE" ]
+  if [[ -z "$CFG" ]] || [[ ! -f "$CFG_FILE" ]]
   then
     echo "This is strange, the configuration file does not exist: $CFG_FILE"
     exit 1
@@ -146,7 +146,7 @@ function process_cfg() (
   local -r CFG="$1"; local -r BKIND=$2; local -r TRG="$3"; local -r NJOBS=$4; shift 4
 
   # Gera loggið læsilegra
-  if [ -n "${PARALLEL_LOOP:-}" ] && [ "$PARALLEL_LOOP" -ne 0 ]
+  if [[ -n "${PARALLEL_LOOP:-}" ]] && [[ "$PARALLEL_LOOP" -ne 0 ]]
   then
     exec > >(sed "s/^/[$CFG:$TRG:$BKIND] /")
     exec 2>&1
@@ -165,11 +165,11 @@ function process_cfg() (
   mkdir -p -- "$PKG_SRC" "$PKG_BLD" "$PKG_INS"
 
   # Collect for deleting on exit
-  if [ -n "${DELETE_PKG_SRC:-}" ] && [ "$DELETE_PKG_SRC" -ne 0 ]
+  if [[ -n "${DELETE_PKG_SRC:-}" ]] && [[ "$DELETE_PKG_SRC" -ne 0 ]]
   then
     put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" "$PKG_SRC"
   fi
-  if [ -n "${DELETE_PKG_BLD:-}" ] && [ "$DELETE_PKG_BLD" -ne 0 ]
+  if [[ -n "${DELETE_PKG_BLD:-}" ]] && [[ "$DELETE_PKG_BLD" -ne 0 ]]
   then
     put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" "$PKG_BLD"
   fi
@@ -201,10 +201,10 @@ function process_cfg() (
   esac
 
   function create_meson_cross_file() {
-    [ $# -eq 1 ] || return 1
+    [[ $# -eq 1 ]] || return 1
     local -r CROSS_FILE="$1"; shift
-    if [ ! -f "$CROSS_FILE" ] || \
-       [ "$CROSS_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]
+    if [[ ! -f "$CROSS_FILE" ]] || \
+       [[ "$CROSS_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]]
     then
       cat > "$CROSS_FILE" <<EOD
 [binaries]
@@ -232,16 +232,16 @@ EOD
   lock_run "$MESON_CROSS_LOCK" \
     create_meson_cross_file "$MESON_CROSS_FILE"
   unset cpu
-  if [ -n "${DELETE_MESON_CONF:-}" ] && [ "$DELETE_MESON_CONF" -ne 0 ]
+  if [[ -n "${DELETE_MESON_CONF:-}" ]] && [[ "$DELETE_MESON_CONF" -ne 0 ]]
   then
     put_into_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" "$MESON_CROSS_FILE"
   fi
 
   function create_cmake_toolchain_file() {
-    [ $# -eq 1 ] || return 1
+    [[ $# -eq 1 ]] || return 1
     local -r TOOLCHAIN_FILE="$1"; shift
-    if [ ! -f "$TOOLCHAIN_FILE" ] || \
-       [ "$TOOLCHAIN_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]
+    if [[ ! -f "$TOOLCHAIN_FILE" ]] || \
+       [[ "$TOOLCHAIN_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]]
     then
       cat > "$TOOLCHAIN_FILE" <<EOD
 set(CMAKE_SYSTEM_NAME Windows)
@@ -269,7 +269,7 @@ EOD
   # Generate Cmake toolchain file atomically to avoid concurrent writers.
   lock_run "$CMAKE_TOOLCHAIN_LOCK" \
     create_cmake_toolchain_file "$CMAKE_TOOLCHAIN_FILE"
-  if [ -n "${DELETE_CMAKE_CONF:-}" ] && [ "$DELETE_CMAKE_CONF" -ne 0 ]
+  if [[ -n "${DELETE_CMAKE_CONF:-}" ]] && [[ "$DELETE_CMAKE_CONF" -ne 0 ]]
   then
     put_into_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" "$CMAKE_TOOLCHAIN_FILE"
   fi
@@ -339,10 +339,10 @@ EOD
     run_hook cfg_custom_build
     ;;
   "autotools")
-    if [ "${#CFG_AUTOTOOLS_BOOTSTRAP[@]}" -gt 0 ]
+    if [[ "${#CFG_AUTOTOOLS_BOOTSTRAP[@]}" -gt 0 ]]
     then
       local -r BOOTSTRAP_FINISHED="$PKG_SRC/.autotools_bootstrapped"
-      if [ ! -f "$BOOTSTRAP_FINISHED" ]
+      if [[ ! -f "$BOOTSTRAP_FINISHED" ]]
       then
         cd -- "$PKG_SRC"
         "${CFG_AUTOTOOLS_BOOTSTRAP[@]}"
@@ -350,23 +350,24 @@ EOD
         cd -- "$PKG_BLD"
       fi
     fi
-    if [ -z "${CFG_CUSTOM_CONFIGURE:-}" ]
+    if [[ -z "${CFG_CUSTOM_CONFIGURE:-}" ]]
     then
       env "${CFG_CONFIGURE_ENV[@]}" \
         "$PKG_SRC/$CFG_CONFIGURE_SH" \
           --host="$TRG" \
           --prefix="$PKG_INS" \
+          --libdir="$PKG_INS/lib" \
           --disable-${BUILD_KINDS_REV[$BKIND]} \
           --enable-$BKIND \
           "${CFG_CONFIGURE_OPTS[@]}"
     fi
     run_hook cfg_post_configure
-    if [ -z "${CFG_CUSTOM_BUILD:-}" ]
+    if [[ -z "${CFG_CUSTOM_BUILD:-}" ]]
     then
       make -j "$NJOBS" "${CFG_MAKE_BUILD_OPTS[@]}" || comp_fail "failed building for $CFG"
     fi
     run_hook cfg_post_build
-    if [ -z "${CFG_CUSTOM_INSTALL:-}" ]
+    if [[ -z "${CFG_CUSTOM_INSTALL:-}" ]]
     then
       make install "${CFG_MAKE_INSTALL_OPTS[@]}" || comp_fail "failed installing for $CFG"
     fi
@@ -437,7 +438,7 @@ do
       ) &
       pid=$!
       pid_to_job["$pid"]="$cfg:$trg:$bkind"
-      while [ "${#pid_to_job[@]}" -ge "$PARALLEL_RUNS" ]
+      while [[ "${#pid_to_job[@]}" -ge "$PARALLEL_RUNS" ]]
       do
         if ! wait -n -p prc
         then
@@ -446,13 +447,13 @@ do
         unset 'pid_to_job[$prc]'
       done
       # Exit the loop on error if not parallelising
-      if [ "$PARALLEL_LOOP" -eq 0 ] && [ ${#failed[@]} -gt 0 ]
+      if [[ "$PARALLEL_LOOP" -eq 0 ]] && [[ ${#failed[@]} -gt 0 ]]
       then
         break 2
       fi
     done
   done
-  while [ "${#pid_to_job[@]}" -gt 0 ]
+  while [[ "${#pid_to_job[@]}" -gt 0 ]]
   do
     if ! wait -n -p prc
     then
@@ -460,7 +461,7 @@ do
     fi
     unset 'pid_to_job[$prc]'
   done
-  if [ "${#failed[@]}" -gt 0 ]
+  if [[ "${#failed[@]}" -gt 0 ]]
   then
     echo "${#failed[@]} packages failed to compile: ${failed[*]}"
     exit 1
