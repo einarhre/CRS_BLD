@@ -287,41 +287,47 @@ EOD
   export LIBS="${CFG_LIBS[*]}"
 
   # Find name of archive with and without suffix
-  mapfile -d '' -t pkg_tars < <(
-    find \
-      "$PKG_TAR_DIR" \
-      -maxdepth 1 \
-      -name "${CFG_PKG_NAME}*${CFG_VERSION}*.tar.*" \
-      -type f \
-      -print0 | \
-    sort -z
-  )
-  if [ "${#pkg_tars[@]}" -ne 1 ]
+  if [[ "${CFG_NO_ARCHIVE:-0}" -eq 0 ]]
   then
-    printf 'Expected exactly one tarball for configuration %s, found %d\n  %s\n' \
-      "$CFG" "${#pkg_tars[@]}" "${pkg_tars[@]}" >&2
-    exit 1
-  fi
-  local -r PKG_TAR="${pkg_tars[0]}"
-  unset pkg_tars
-
-  # Package extracted into its mutuable source directory, patches
-  # applied and any post extraction configuration applied to the code.
-  local -r PKG_EXTRACTED="$PKG_SRC/.extracted"
-  if [ ! -f "$PKG_EXTRACTED" ]
-  then
-    tar --strip-components=1 --directory="$PKG_SRC" -xaf "$PKG_TAR"
-    # Apply available patches for this packages
-    while IFS= read -r -d '' ptc
-    do
-      apply_patch_file "$ptc" "$PKG_SRC"
-    done < <(
-      find "$PKG_PTC_DIR" -maxdepth 1 -iname "${CFG}-[0-9]*.patch" -type f -print0 | sort -z
+    mapfile -d '' -t pkg_tars < <(
+      find -- \
+        "$PKG_TAR_DIR" \
+        -maxdepth 1 \
+        -name "${CFG_PKG_NAME}*${CFG_VERSION}*.tar.*" \
+        -type f \
+        -print0 | \
+      sort -z
     )
-    # Apply specific configuration for this build
+    if [[ "${#pkg_tars[@]}" -ne 1 ]]
+    then
+      printf 'Expected exactly one tarball for configuration %s, found %d\n' \
+        "$CFG" "${#pkg_tars[@]}" >&2
+      printf '  %s\n' "${pkg_tars[@]}" >&2
+      exit 1
+    fi
+    local -r PKG_TAR="${pkg_tars[0]}"
+    unset pkg_tars
+
+    # Package extracted into its mutuable source directory, patches
+    # applied and any post extraction configuration applied to the code.
+    local -r PKG_EXTRACTED="$PKG_SRC/.extracted"
+    if [[ ! -f "$PKG_EXTRACTED" ]]
+    then
+      tar --strip-components=1 --directory="$PKG_SRC" -xaf "$PKG_TAR"
+      # Apply available patches for this packages
+      while IFS= read -r -d '' ptc
+      do
+        apply_patch_file "$ptc" "$PKG_SRC"
+      done < <(
+        find -- "$PKG_PTC_DIR" -maxdepth 1 -iname "${CFG}-[0-9]*.patch" -type f -print0 | sort -z
+      )
+      # Apply specific configuration for this build
+      run_hook cfg_post_extract
+      touch -- "$PKG_EXTRACTED"
+      unset ptc
+    fi
+  else
     run_hook cfg_post_extract
-    touch -- "$PKG_EXTRACTED"
-    unset ptc
   fi
 
   # Enter build directory
