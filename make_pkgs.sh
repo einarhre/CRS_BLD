@@ -47,11 +47,11 @@ declare -r PKG_INS_DIR="$INSTALL_DIRECTORY/pkg"
 
 # Collect the available configurations to compile
 declare -a cfgs=()
-while IFS= read -r fn
+while IFS= read -r -d '' fn
 do
   cfgs+=("$(basename "${fn%.sh}")")
 done < <(
-  find "$PKG_CFG_DIR" -maxdepth 1 -name '*.sh'
+  find -- "$PKG_CFG_DIR" -maxdepth 1 -name '*.sh' -print0
 )
 unset fn
 
