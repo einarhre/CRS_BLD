@@ -401,7 +401,7 @@ EOD
       -S "$PKG_SRC/$CFG_CMAKE_SRC_DIR" \
       -B "$PKG_BLD" \
       -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
-      -DBUILD_SHARED_LIBS=$([ "$BKIND" = "${BUILD_KINDS[0]}" ] && echo OFF || echo ON) \
+      -DBUILD_SHARED_LIBS=$([[ "$BKIND" = "${BUILD_KINDS[0]}" ]] && echo OFF || echo ON) \
       -DCMAKE_PREFIX_PATH="$PKG_INS" \
       -DCMAKE_FIND_ROOT_PATH="$PKG_INS" \
       -DCMAKE_INSTALL_PREFIX="$PKG_INS" \
