@@ -381,17 +381,19 @@ EOD
     ;;
   "meson")
     env "${CFG_MESON_ENV[@]}" \
-    meson setup "$PKG_BLD" "$PKG_SRC" \
-      --cross-file "$MESON_CROSS_FILE" \
-      --wrap-mode=nofallback \
-      --prefix "$PKG_INS" \
-      --default-library "$BKIND" \
-      --buildtype release \
-      "${CFG_MESON_OPTS[@]}"
+      meson setup "$PKG_BLD" "$PKG_SRC" \
+        --cross-file "$MESON_CROSS_FILE" \
+        --wrap-mode=nofallback \
+        --prefix "$PKG_INS" \
+        --default-library "$BKIND" \
+        --buildtype release \
+        "${CFG_MESON_OPTS[@]}"
     run_hook cfg_post_configure
-    ninja -j "$NJOBS" -C "$PKG_BLD" || comp_fail "failed compiling for $CFG"
+    env "${CFG_MESON_ENV[@]}" \
+      ninja -j "$NJOBS" -C "$PKG_BLD" || comp_fail "failed compiling for $CFG"
     run_hook cfg_post_build
-    ninja -j "$NJOBS" -C "$PKG_BLD" install || comp_fail "failed installing for $CFG"
+    env "${CFG_MESON_ENV[@]}" \
+      ninja -j "$NJOBS" -C "$PKG_BLD" install || comp_fail "failed installing for $CFG"
     run_hook cfg_post_install
     ;;
   "cmake")
