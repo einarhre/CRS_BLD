@@ -4,9 +4,7 @@ CRS_BLD is a small build environment for creating MinGW-w64 cross-compilers and 
 
 It is used to build Windows versions of applications such as tindajudoshiai.
 
-This system is based on ideas and build structure from MXE:
-
-https://mxe.cc/
+This system is based on ideas and build structure from MXE: <https://mxe.cc/>
 
 The generated compiler trees and package installation directories are intentionally not tracked in Git. They are built locally from the scripts, package configuration files and patches in this repository.
 
