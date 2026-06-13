@@ -4,6 +4,7 @@
 # Mandatory variables
 declare -rg CFG_PKG_NAME='package_name'
 declare -rg CFG_VERSION='a.b.c' # a,b,c are integers
+declare -rg CFG_WEBSITE='https://package.web.site'
 declare -rg CFG_BUILD_SYSTEM='custom'  # autotools, meson, cmake, or custom
 declare -rg CFG_BUILD_SYSTEM_STATIC='' # if different system used between
 declare -rg CFG_BUILD_SYSTEM_SHARED='' # static/shared builds
