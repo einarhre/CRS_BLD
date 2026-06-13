@@ -1,0 +1,30 @@
+This file is part of MXE. See LICENSE.md for licensing information.
+
+Contains ad hoc patches for cross building.
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: v1993 <v19930312@gmail.com>
+Date: Mon, 6 Dec 2021 22:38:14 +0300
+Subject: [PATCH 1/1] Fix static builds on Windows
+
+
+diff --git a/src/dispatch_wgl.c b/src/dispatch_wgl.c
+index 1111111..2222222 100644
+--- a/src/dispatch_wgl.c
++++ b/src/dispatch_wgl.c
+@@ -89,6 +89,7 @@ epoxy_handle_external_wglMakeCurrent(void)
+     }
+ }
+ 
++#ifdef DLL_EXPORT
+ /**
+  * This global symbol is apparently looked up by Windows when loading
+  * a DLL, but it doesn't declare the prototype.
+@@ -140,6 +141,7 @@ DllMain(HINSTANCE dll, DWORD reason, LPVOID reserved)
+ 
+     return TRUE;
+ }
++#endif
+ 
+ WRAPPER_VISIBILITY (BOOL)
+ WRAPPER(epoxy_wglMakeCurrent)(HDC hdc, HGLRC hglrc)

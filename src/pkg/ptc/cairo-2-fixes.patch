@@ -1,0 +1,12 @@
+--- a/meson.build	2026-05-19 19:16:00.019147242 +0900
++++ b/meson.build	2026-05-19 19:18:14.403142954 +0900
+@@ -272,6 +272,9 @@
+   required: fontconfig_option,
+   version: fontconfig_required_version,
+   fallback: ['fontconfig', 'fontconfig_dep'],
++  # Ensure pkg-config includes Libs.private/Requires.private when
++  # statically linking against fontconfig.
++  static: get_option('default_library') == 'static',
+ )
+ if fontconfig_dep.found()
+   fc_check_funcs = [

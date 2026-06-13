@@ -1,0 +1,8 @@
+*~
+*.swp
+*.swo
+.DS_Store
+install/
+build/
+src/cpl/
+src/pkg/tar/

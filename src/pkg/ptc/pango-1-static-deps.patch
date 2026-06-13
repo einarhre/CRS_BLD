@@ -1,0 +1,63 @@
+--- a/meson.build	2026-05-20 15:19:25.418010390 +0900
++++ b/meson.build	2026-05-20 15:36:34.415974093 +0900
+@@ -292,8 +292,12 @@
+ # Override user option 'auto' to 'enabled' on platforms that always
+ # require fontconfig.
+ fontconfig_option = fontconfig_required ? true : fontconfig_option
++
++# Needed for correct static dependency closure on MinGW.
++# fontconfig/freetype pull in brotli private dependencies.
+ fontconfig_dep = dependency('fontconfig', version: fontconfig_req,
+-                            required: fontconfig_option)
++                            required: fontconfig_option,
++                            static: get_option('default_library') == 'static')
+ 
+ if fontconfig_dep.found()
+   pango_deps += fontconfig_dep
+@@ -316,9 +320,12 @@
+ if harfbuzz_dep.type_name() == 'internal'
+   freetype_fallback_options = ['harfbuzz=disabled']
+ endif
++# Needed for correct static dependency closure on MinGW.
++# fontconfig/freetype pull in brotli private dependencies.
+ freetype_dep = dependency(['freetype2', 'freetype'],
+                           required: freetype_option,
+-                          default_options: freetype_fallback_options)
++                          default_options: freetype_fallback_options,
++                          static: get_option('default_library') == 'static')
+ 
+ if freetype_dep.found() and freetype_dep.type_name() in ['pkgconfig', 'internal']
+   freetype2_pc = 'freetype2'
+@@ -377,11 +384,14 @@
+   ]
+ endif
+ 
++# Needed for correct static dependency closure on MinGW.
++# cairo-ft pulls in freetype/fontconfig, which pull in brotli/expat privately.
+ cairo_dep = dependency(
+   'cairo',
+   version: cairo_req,
+   required: get_option('cairo'),
+   default_options: cairo_fallback_options,
++  static: get_option('default_library') == 'static',
+ )
+ cairo_dwrite_dep = disabler() # Only for Windows
+ cairo_found_type = cairo_dep.type_name()
+@@ -435,7 +445,7 @@
+ 
+   foreach b: cairo_font_backends
+     if cairo_found_type == 'pkgconfig'
+-      dep = dependency(b[0], version: b[1], required: false)
++      dep = dependency(b[0], version: b[1], required: false, static: get_option('default_library') == 'static')
+     else
+       dep = dependency('', required: false)
+       foreach f: cairo_features
+@@ -493,7 +503,7 @@
+ 
+   foreach b: cairo_surface_backends
+     if cairo_found_type == 'pkgconfig'
+-      dep = dependency(b[0], version: b[1], required: false)
++      dep = dependency(b[0], version: b[1], required: false, static: get_option('default_library') == 'static')
+     else
+       dep = dependency('', required: false)
+       foreach f: cairo_features

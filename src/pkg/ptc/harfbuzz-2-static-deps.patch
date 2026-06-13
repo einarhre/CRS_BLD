@@ -1,0 +1,39 @@
+--- a/meson.build	2026-05-20 14:12:53.473978033 +0900
++++ b/meson.build	2026-05-20 14:25:54.361912319 +0900
+@@ -108,7 +108,9 @@
+ 
+ m_dep = cpp.find_library('m', required: false)
+ 
+-freetype_dep = dependency('freetype2', version: freetype_min_version, required: get_option('freetype'), default_options: ['harfbuzz=disabled'])
++# Needed for proper propagation of transitive private dependencies
++# (e.g. brotlicommon via freetype2) during static MinGW builds.
++freetype_dep = dependency('freetype2', version: freetype_min_version, required: get_option('freetype'), default_options: ['harfbuzz=disabled'], static: get_option('default_library') == 'static')
+ glib_dep = dependency('glib-2.0', version: glib_min_version, required: get_option('glib'))
+ gobject_dep = dependency('gobject-2.0', version: glib_min_version, required: get_option('gobject'))
+ graphite2_dep = dependency('graphite2', version: graphite2_min_version, required: get_option('graphite2'))
+@@ -133,8 +135,11 @@
+ cairo_dep = null_dep
+ cairo_ft_dep = null_dep
+ if not get_option('cairo').disabled()
+-  cairo_dep = dependency('cairo', version: cairo_min_version, required: false)
+-  cairo_ft_dep = dependency('cairo-ft', version: cairo_min_version, required: false)
++  # Needed for correct static dependency closure on MinGW.
++  # cairo/cairo-ft pull in fontconfig, which needs expat privately.
++  cairo_static = get_option('default_library') == 'static'
++  cairo_dep = dependency('cairo', version: cairo_min_version, required: false, static: cairo_static)
++  cairo_ft_dep = dependency('cairo-ft', version: cairo_min_version, required: false, static: cairo_static)
+ 
+   if (not cairo_dep.found() and
+       cpp.get_argument_syntax() == 'msvc' and
+@@ -152,9 +157,9 @@
+     # dependency cycle here because we have configured freetype2 above with
+     # harfbuzz support disabled, so when cairo will lookup freetype2 dependency
+     # it will be forced to use that one.
+-    cairo_dep = dependency('cairo', version: cairo_min_version, required: get_option('cairo'))
++    cairo_dep = dependency('cairo', version: cairo_min_version, required: get_option('cairo'), static: cairo_static)
+     cairo_ft_required = get_option('cairo').enabled() and get_option('freetype').enabled()
+-    cairo_ft_dep = dependency('cairo-ft', version: cairo_min_version, required: cairo_ft_required)
++    cairo_ft_dep = dependency('cairo-ft', version: cairo_min_version, required: cairo_ft_required, static: cairo_static)
+   endif
+ endif
+ 

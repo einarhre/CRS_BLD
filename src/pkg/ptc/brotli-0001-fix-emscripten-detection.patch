@@ -1,0 +1,24 @@
+--- a/CMakeLists.txt	2023-08-29 20:00:29.000000000 +0900
++++ b/CMakeLists.txt	2026-05-18 17:34:53.793539392 +0900
+@@ -19,13 +19,14 @@
+   message(STATUS "Build type is '${CMAKE_BUILD_TYPE}'")
+ endif()
+
+-include(CheckCSourceCompiles)
+-check_c_source_compiles(
+-  "#if defined(__EMSCRIPTEN__)
+-   int main() {return 0;}
+-   #endif"
+-  BROTLI_EMSCRIPTEN
+-)
++# Avoid false-positive Emscripten detection.
++# The previous compile test succeeded on non-Emscripten compilers
++# because the preprocessor could emit an empty translation unit.
++if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
++  set(BROTLI_EMSCRIPTEN TRUE)
++else()
++  set(BROTLI_EMSCRIPTEN FALSE)
++endif()
+ if (BROTLI_EMSCRIPTEN)
+   message("-- Compiler is EMSCRIPTEN")
+ else()
