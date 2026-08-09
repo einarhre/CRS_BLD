@@ -1,6 +1,6 @@
 # CRS_BLD
 
-CRS_BLD is a small build environment for creating MinGW-w64 cross-compilers and Windows dependency packages from Linux.
+CRS_BLD is a small build environment for creating MinGW-w64 cross-compilers and Windows dependency packages from Linux or macOS.
 
 It is used to build Windows versions of applications such as tindajudoshiai.
 
@@ -87,6 +87,50 @@ The `src/cpl/` directory contains compiler sources such as Binutils, GCC and Min
 
 The `src/pkg/tar/` directory contains downloaded package source archives.
 
+## Host requirements
+
+The build scripts require GNU command-line tools and Bash 4 or newer. The Bash version included with macOS is too old.
+
+### Linux
+
+On Linux, install the usual C/C++ build environment together with Bash, GNU Make, GNU Coreutils, GNU Findutils, GNU Sed, GNU Tar, Patch, Git and ZIP.
+
+The exact package names depend on the Linux distribution.
+
+### macOS
+
+macOS support has been tested on Apple Silicon with GCC 16.1.0.
+
+First install the Xcode Command Line Tools:
+
+```bash
+xcode-select --install
+```
+
+Install [Homebrew](https://brew.sh/) and the required GNU build tools:
+
+```bash
+brew install bash coreutils findutils gnu-sed gnu-tar gpatch grep make zip
+```
+
+Additional tools used by compiler sources and package recipes can be installed with:
+
+```bash
+brew install automake bison cmake flex libtool meson pkgconf texinfo
+```
+
+The scripts automatically prefer the Homebrew versions of GNU tools when running on macOS.
+
+Run the scripts explicitly with Homebrew Bash if the script files are not executed directly:
+
+```bash
+/opt/homebrew/bin/bash ./make_cross-compiler.sh 16.1.0
+```
+
+The `/opt/homebrew` prefix is the normal Homebrew location on Apple Silicon. Homebrew installations on Intel Macs normally use `/usr/local`.
+
+The macOS build creates macOS-hosted cross-compilers that produce Windows binaries. It also creates native Windows compiler packages for both supported MinGW-w64 targets.
+
 ## Compiler source setup
 
 The compiler source archives are kept locally under:
@@ -172,7 +216,7 @@ i686-w64-mingw32
 x86_64-w64-mingw32
 ```
 
-For each target, the script first builds a Linux-hosted cross-compiler. This compiler runs on Linux and produces Windows binaries.
+For each target, the script first builds a host cross-compiler. On Linux this is a Linux-hosted compiler; on macOS it is a macOS-hosted compiler. It produces Windows binaries.
 
 The generated cross-compilers are installed below:
 
@@ -190,7 +234,7 @@ The build sequence for each cross-compiler target is:
 5. Finish the full GCC cross-compiler.
 6. Build and install Winpthreads.
 
-After the Linux-hosted cross-compiler has been built, the script also builds a Windows-native compiler for the same target. This compiler runs on Windows and produces Windows binaries.
+After the host cross-compiler has been built, the script also builds a Windows-native compiler for the same target. This compiler runs on Windows and produces Windows binaries.
 
 The generated Windows-native compilers are installed below:
 

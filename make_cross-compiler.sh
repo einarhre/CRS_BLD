@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -235,7 +235,8 @@ function build_target() {
     --prefix="$INSTALL_DIRECTORY/native/$TRG" \
     --host="$TRG" \
     --target="$TRG" \
-    --disable-multilib
+    --disable-multilib \
+    --without-zstd
   make -j "$NJOBS" && make install || comp_fail "host binutils"
 
   # 8. Build Windows-native gcc

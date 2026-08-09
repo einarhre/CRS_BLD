@@ -3,12 +3,11 @@
 
 set -euo pipefail
 
-declare -r ROOTPATH="${1:-/home/eoh/src/CRS_BLD/install/pkg}"; shift $#
+script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/common.sh"
+unset script_dir
 
-declare -ra TARGETS=(
-  'i686-w64-mingw32'
-  'x86_64-w64-mingw32'
-)
+declare -r ROOTPATH="${1:-$INSTALL_DIRECTORY/pkg}"; shift $#
 
 declare -ra BUILD_KINDS=(
   'static'
