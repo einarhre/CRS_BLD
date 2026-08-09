@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Optional behaviour
@@ -213,7 +213,7 @@ cpp = '$CXX'
 ar = '$AR'
 strip = '$STRIP'
 windres = '$WINDRES'
-pkg-config = '/usr/bin/pkg-config'
+pkg-config = '$PKG_CONFIG_BIN'
 
 [host_machine]
 system = 'windows'
