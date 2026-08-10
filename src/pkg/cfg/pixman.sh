@@ -31,8 +31,15 @@ declare -rga CFG_LIBS=(
 )
 
 # Configuration options
-declare -rga CFG_MESON_OPTS=(
+if [[ "$BKIND" = "${BUILD_KINDS[0]}" ]]
+then
+  declare -rga CFG_MESON_OPTS=(
+    '-Dprefer_static=true'
 )
+else
+  declare -rga CFG_MESON_OPTS=(
+)
+fi
 declare -rga CFG_MESON_ENV=(
 )
 
