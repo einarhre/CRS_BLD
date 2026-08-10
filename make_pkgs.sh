@@ -174,6 +174,25 @@ function process_cfg() (
     put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" "$PKG_BLD"
   fi
 
+  # Resolve native build-machine tools before prepending the cross-toolchain
+  # directory to PATH. Meson must run these macOS executables while generating
+  # resources for the Windows target.
+  local -r NATIVE_GLIB_COMPILE_RESOURCES="$(command -v glib-compile-resources || true)"
+  local -r NATIVE_GLIB_COMPILE_SCHEMAS="$(command -v glib-compile-schemas || true)"
+  local -r NATIVE_GDK_PIXBUF_PIXDATA="$(command -v gdk-pixbuf-pixdata || true)"
+  if [[ -z "$NATIVE_GLIB_COMPILE_RESOURCES" ]] ||
+     [[ -z "$NATIVE_GLIB_COMPILE_SCHEMAS" ]]
+  then
+    echo "Native GLib build tools were not found in PATH" >&2
+    return 1
+  fi
+  if [[ -n "$NATIVE_GDK_PIXBUF_PIXDATA" ]]
+  then
+    export GDK_PIXBUF_PIXDATA="$NATIVE_GDK_PIXBUF_PIXDATA"
+  fi
+
+  # Prepend the target toolchain so ordinary compiler and binutils lookups
+  # resolve to the selected Windows cross-compiler.
   local -r BIN="$INSTALL_DIRECTORY/cross/$TRG/bin"
   export PATH="$BIN:$PATH"
   export CC="$TRG-gcc"
@@ -214,6 +233,8 @@ ar = '$AR'
 strip = '$STRIP'
 windres = '$WINDRES'
 pkg-config = '$PKG_CONFIG_BIN'
+glib-compile-resources = '$NATIVE_GLIB_COMPILE_RESOURCES'
+glib-compile-schemas = '$NATIVE_GLIB_COMPILE_SCHEMAS'
 
 [host_machine]
 system = 'windows'

@@ -113,11 +113,13 @@ Install [Homebrew](https://brew.sh/) and the required GNU build tools:
 brew install bash coreutils findutils gnu-sed gnu-tar gpatch grep make zip
 ```
 
-Additional tools used by compiler sources and package recipes can be installed with:
+Install the additional tools required by compiler sources and package recipes:
 
 ```bash
-brew install automake bison cmake flex libtool meson pkgconf texinfo
+brew install automake bison cmake flex gdk-pixbuf glib libtool meson pkgconf texinfo
 ```
+
+The `glib` and `gdk-pixbuf` packages provide native macOS build tools used while cross-compiling GLib- and GTK-based packages for Windows. In particular, Meson must use the native `glib-compile-resources`, `glib-compile-schemas` and `gdk-pixbuf-pixdata` executables rather than Windows target executables.
 
 The scripts automatically prefer the Homebrew versions of GNU tools when running on macOS.
 

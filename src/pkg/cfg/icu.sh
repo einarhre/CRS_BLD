@@ -117,7 +117,7 @@ function cfg_custom_build() {
     --enable-$BKIND \
     --with-cross-build="$ICU_HOST_TOOLS_BLD" \
     --enable-icu-config=no \
-    SHELL="$SHELL" \
+    SHELL=/bin/bash \
     CXXFLAGS="-std=gnu++17 ${CXXFLAGS:-}" \
     LIBS="-lstdc++ ${LIBS:-}"
 
