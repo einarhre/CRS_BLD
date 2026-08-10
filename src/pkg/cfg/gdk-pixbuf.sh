@@ -37,6 +37,7 @@ declare -rga CFG_LIBS=(
 if [[ "$BKIND" = "${BUILD_KINDS[0]}" ]]
 then
   declare -rga CFG_MESON_OPTS=(
+    '-Dprefer_static=true'
     '-Dinstalled_tests=false'
     '-Dintrospection=disabled'
     '-Dman=false'
