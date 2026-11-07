@@ -6,3 +6,7 @@ install/
 build/
 src/cpl/
 src/pkg/tar/
+
+# Python test cache
+__pycache__/
+*.py[cod]
