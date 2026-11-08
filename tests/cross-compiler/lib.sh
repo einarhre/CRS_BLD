@@ -45,6 +45,7 @@ sandbox_cleanup() {
     echo "sandbox kept: $SB" >&2
     return 0
   fi
+  chmod -R u+rwX -- "$SB" 2> /dev/null
   rm -rf -- "$SB"
 }
 
@@ -90,6 +91,8 @@ done
 key="all"
 [[ ${#targets[@]} -gt 0 ]] && key="${targets[*]}"
 log() { printf 'make\t%s\t%s\t%s\t%s\n' "$rel" "$key" "$jobs" "$1" >> "$MOCK_LOG"; }
+# shellcheck source=/dev/null
+[[ -f "${MOCK_SB:-/nonexistent}/mock/spy.sh" ]] && . "$MOCK_SB/mock/spy.sh" && spy_mutation "$rel"
 if [[ ! -f Makefile ]]
 then
   log nomakefile
@@ -116,7 +119,7 @@ case "$key" in
     then
       status=uptodate
     else
-      : > "$stamp"
+      echo "built $key" > "$stamp"
       status=built
     fi
     ;;
@@ -125,7 +128,7 @@ if [[ "$status" == ran ]]
 then
   inst="$PREF/install/$kind/$trg"
   "$MOCK_REAL_MKDIR" -p -- "$inst/bin"
-  : > "$inst/bin/.mock-installed-${comp//\//_}-${key// /_}"
+  echo "installed $comp $key" > "$inst/bin/.mock-installed-${comp//\//_}-${key// /_}"
   if [[ "$kind" == native && "$comp" == gcc && "$key" == install ]]
   then
     case "$trg" in
@@ -171,6 +174,8 @@ do
   case "$a" in -*) ;; *) pos+=("$a") ;; esac
 done
 name="${pos[0]}"; input="${pos[1]:-}"
+# shellcheck source=/dev/null
+[[ -f "${MOCK_SB:-/nonexistent}/mock/spy.sh" ]] && . "$MOCK_SB/mock/spy.sh" && spy_mutation "$name"
 archive="$name"
 [[ "$archive" == *.zip ]] || archive="${archive}.zip"
 base="${name##*/}"; base="${base%.zip}"
@@ -276,6 +281,34 @@ EOF
   # which run with MOCK_MV_TOLERANT=0).
   cat > "$SB/bin/mv" <<'EOF'
 #!/usr/bin/env bash
+# Failure injection: MOCK_MV_FAIL_MATCH=substring fails (without moving) every
+# mv with an operand containing it.  MOCK_MV_FAIL_UNKNOWN=1 fails every mv
+# whose destination is not a file the original script publishes (source and
+# build trees, DLLs, ZIPs, the original records) -- i.e. a new record file.
+if [[ -n "${MOCK_MV_FAIL_MATCH:-}" ]]
+then
+  for a in "$@"
+  do
+    if [[ "$a" == *"$MOCK_MV_FAIL_MATCH"* ]]
+    then
+      printf 'mvfail\t%s\n' "$*" >> "$MOCK_LOG"
+      echo "mv: simulated interruption moving '$a'" >&2
+      exit 1
+    fi
+  done
+fi
+if [[ "${MOCK_MV_FAIL_UNKNOWN:-0}" == 1 ]]
+then
+  last="${!#}"; base="${last##*/}"
+  case "$base" in
+    .cross-inputs|.cross-prepared|.cross-configured|*.zip|*.dll|gcc-*|binutils-*|mingw-w64-v*|source|previous) ;;
+    *)
+      printf 'mvfail\t%s\n' "$*" >> "$MOCK_LOG"
+      echo "mv: simulated interruption publishing '$last'" >&2
+      exit 1
+      ;;
+  esac
+fi
 if [[ "${MOCK_MV_TOLERANT:-0}" == 1 ]]
 then
   args=()
@@ -310,6 +343,31 @@ fi
 exec "$MOCK_REAL_MKDIR" "$@"
 EOF
 
+  # ---- shared by the simulated tools: marks the end of the "validation" phase
+  # of a run (the first tool that can modify a target) and, with MOCK_SPY=1,
+  # records every file (outside src/) with its checksum at the moment the first
+  # modifying tool for each target starts.  A completion record that is still
+  # byte-identical then was not invalidated before the target was modified.
+  cat > "$SB/mock/spy.sh" <<'EOF'
+spy_mutation() { # name containing a target triple
+  local t f
+  : > "$MOCK_SB/scan.off"
+  [[ -n "${MOCK_SPY:-}" ]] || return 0
+  for t in i686-w64-mingw32 x86_64-w64-mingw32
+  do
+    case "$1" in *"$t"*) ;; *) continue ;; esac
+    [[ -e "$MOCK_SB/spy.done.$t" ]] && continue
+    : > "$MOCK_SB/spy.done.$t"
+    ( cd "$PREF" 2> /dev/null && find . -path ./src -prune -o -type f -print | LC_ALL=C sort |
+      while IFS= read -r f
+      do
+        printf '%s\t%s\n' "$f" "$(cksum < "$f")"
+      done ) > "$MOCK_SB/spy.$t"
+  done
+  return 0
+}
+EOF
+
   # ---- tools that must never run during these tests
   for f in gcc cc c++ g++ ld ar ranlib curl wget
   do
@@ -329,6 +387,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 cwd="$(pwd)"
 rel="${cwd#"$PREF"/build/}"
 srcrel="${0#*src/cpl/}"; srcrel="${srcrel%/configure}"
+# shellcheck source=/dev/null
+[[ -f "${MOCK_SB:-/nonexistent}/mock/spy.sh" ]] && . "$MOCK_SB/mock/spy.sh" && spy_mutation "$rel"
 id="$(cat "$here/IDENTITY")"
 args="$*"; args="${args//"$PREF"/@PREF@}"
 printf 'configure\t%s\t%s\t%s\t%s\n' "$rel" "$srcrel" "$id" "$args" >> "$MOCK_LOG"
@@ -473,10 +533,12 @@ run_crs() {
   [[ "${1:-}" == -- ]] && shift
   RUNNO=$((RUNNO + 1))
   printf 'run\t%s\t%s\n' "$RUNNO" "$*" >> "$LOG"
+  rm -f -- "$SB"/scan.armed "$SB"/scan.off "$SB"/scan.hit "$SB"/spy.done.* "$SB"/spy.i686-* "$SB"/spy.x86_64-*
   set +e
   env "PREF=$PREF" "PATH=$SB/bin:$ORIG_PATH" "NCRS=2" "HOME=$SB/home" \
       "MOCK_LOG=$LOG" "MOCK_UPSTREAM=$SB/upstream" "MOCK_REAL_MV=$REAL_MV" "MOCK_REAL_MKDIR=$REAL_MKDIR" \
       "MOCK_MV_TOLERANT=1" "MOCK_DLL_MODE=reinstall" \
+      "MOCK_SB=$SB" "MOCK_REAL_PATH=$ORIG_PATH" "MOCK_GNU_MAKE=${REAL_GNU_MAKE:-}" \
       ${envs[@]+"${envs[@]}"} \
       bash "$SCRIPT_UNDER_TEST" "$@" \
       > "$SB/out.$RUNNO" 2> "$SB/err.$RUNNO" < /dev/null
@@ -712,3 +774,7 @@ assert_safe_input_change() { # build-snapshot-before id-regex "rels..."
       | grep -Eq -- "$2" || fail "build/$rel not configured from $2"
   done
 }
+
+# Completion-cache support (record discovery, mutations, real-make fixture).
+# shellcheck source=lib_completion.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib_completion.sh"
