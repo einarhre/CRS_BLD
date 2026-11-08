@@ -1,10 +1,10 @@
-# CRS_BLD — Cross-compiler build recovery
+# CRS_BLD — Cross-compiler recovery and completion-cache contract
 
-## Objective
+## Purpose and status
 
-Improve `make_cross-compiler.sh` so that an interrupted build can be restarted safely using the same command, preserving valid completed work and repeating incomplete work.
+This document specifies the implemented behavior of `make_cross-compiler.sh` for safe restart after interruption and for verified reuse of completed MinGW-w64 target pipelines. It is a maintenance contract, not a pending implementation assignment. The current completion-record format is schema 2.
 
-The solution must preserve existing successful build behavior on Linux and macOS.
+The intended behavior preserves compatible work, revisits incomplete work, and avoids re-running a fully completed target when its validated completion record and artifact metadata still match. Linux and macOS remain supported targets; the completion cache requires suitable GNU utilities (see portability limitations).
 
 ## Functional requirements
 
@@ -84,8 +84,9 @@ digests bind exact validated file bytes, including final newlines. Schema 1 reco
 are rejected and replaced through recovery. Record rejection prints a diagnostic.
 
 Global invalidation includes all `.cross-complete-*` paths, even malformed records
-or unexpected target names. Regular files and symlinks are unlinked without
-following links. A directory-valued path is preserved and aborts the invocation;
+or unexpected target names. Non-directory entries (including regular files,
+symlinks and special filesystem entries) are unlinked without following links.
+A directory-valued path is preserved and aborts the invocation;
 it is never recursively removed. Per-target invalidation uses the same safeguards.
 
 Metadata roots, in order, are `build/cross/$TRG`, `build/native/$TRG`,
@@ -166,6 +167,13 @@ after safe ZIP publication and successful scanning.
 - Reject unsafe reuse with an explanatory message.
 - Do not automatically delete valuable build artifacts merely because compatibility cannot be established.
 - Changing only the parallel job count must not invalidate a compatible build.
+- **Known inherited limitation:** manually restoring build/install trees from a
+  different configuration after the global compatibility records have been
+  legitimately republished is outside the compatibility guarantee. Per-target
+  completion records prevent an old cache hit, but ordinary recovery can reuse
+  pre-existing configured trees; recovery is not a universal reconfiguration
+  mechanism. Do not treat the no-work cache result as validation of manually
+  substituted artifacts.
 
 ### R6. Repeatable installation and packaging
 
@@ -175,7 +183,10 @@ after safe ZIP publication and successful scanning.
 
 ## Verification requirements
 
-Tests must use isolated temporary directories and simulated build tools, without compiling GCC.
+Automated regression tests must use isolated temporary directories and simulated
+build tools or lightweight GNU `make` fixtures, without compiling GCC. Real
+integration builds are separate, explicitly authorized operations using an
+isolated `PREF`; they must not modify a valuable existing production build.
 
 Test at least:
 
@@ -190,21 +201,40 @@ Test at least:
 9. Repeated DLL relocation and packaging.
 10. Preservation of compatible build artifacts.
 
-Regression tests for confirmed defects must fail against the original implementation before fixes are evaluated.
+Regression tests for confirmed defects should demonstrate the failure on the
+pre-fix implementation when feasible. Preserve the existing recovery assertions
+as well as the new cache-hit assertions.
 
-## Constraints
+Typical verification commands:
 
-- Do not modify `make_pkgs.sh`.
-- Preserve Linux and macOS compatibility.
-- Avoid new runtime dependencies where possible.
-- Avoid real compiler builds during automated regression testing.
-- Do not weaken tests merely to make an implementation pass.
-- Do not create Git commits unless explicitly requested.
+```sh
+tests/run-cross-compiler-tests.sh
+python3 -m unittest discover -s tests -p 'test_*.py'
+bash -n make_cross-compiler.sh
+```
 
-## Division of responsibility
+### Linux integration evidence (Drangey, 2026-11-08)
 
-**Claude Code:** Independently develop regression and edge-case tests from this specification, using the original implementation as the baseline.
+On openSUSE Leap 16, a separately maintained `CRS_BLD-validation` prefix held
+GCC 16.1.0 builds for `i686-w64-mingw32` and `x86_64-w64-mingw32`. A first
+successful invocation with the new driver published both schema-2 records.
+A following invocation using `NCRS=4` (after `NCRS=10`) reported that both
+completed targets were verified and skipped; exit status was 0 and measured
+wall time was 11.106 seconds. The inventory contained 31,901 `.o` files.
+A before/after comparison found no changes to their path/size/mtime records,
+and the SHA-256 checksums of both ZIP archives were unchanged. An earlier
+uncached repeat had taken approximately 42 minutes; timings are host- and
+workload-specific, not a performance guarantee.
 
-**Codex:** Independently design and implement the smallest maintainable correction, with its own focused tests.
+This confirms an unchanged completed repeat on that Linux host. It does **not**
+prove native macOS cache operation, arbitrary corruption detection, or a real
+integration test of every invalidation/recovery failure mode; those are covered
+to varying degrees by the automated regression suite.
 
-**Human reviewer:** Compare the results, run Claude's tests against Codex's implementation, inspect changes in Vim, and approve integration.
+## Maintenance constraints
+
+- Preserve Linux and macOS behavior and avoid new runtime dependencies where practical.
+- Never delete valuable existing build, source or installation trees as an automated test shortcut.
+- Keep `make_pkgs.sh` out of scope for cross-compiler-only changes unless a dependency justifies the change.
+- Do not weaken existing tests merely to make an implementation pass.
+- Honor the task-specific permissions for editing, committing, merging, pushing and running real builds; see `AGENTS.md`.

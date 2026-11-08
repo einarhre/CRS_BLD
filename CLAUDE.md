@@ -1,10 +1,9 @@
 # CRS_BLD — Claude Code
 
-Read and follow `AGENTS.md` for repository conventions,
-development rules, and safety constraints.
+Follow `AGENTS.md` for repository-wide safety, testing and change-management rules.
 
-For cross-compiler recovery work, read
-`docs/cross-compiler-resume-spec.md`.
+For any work involving cross-compiler recovery or completion caching, read `docs/cross-compiler-resume-spec.md` before changing code or tests.
 
-Follow the specific role and modification boundaries
-given in the current task.
+Respect the role and boundaries of the current task, including read-only reviews and separate Git worktrees. Do not infer permission to edit, commit, merge, push or run a real compiler build merely because such actions were authorized in an earlier task.
+
+When reviewing work by another agent, distinguish verified findings from assumptions and report reproducible defects, test coverage gaps and remaining risks. Keep detailed implementation requirements in the specification rather than duplicating them here.

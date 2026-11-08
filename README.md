@@ -11,7 +11,7 @@ The generated compiler trees and package installation directories are intentiona
 ## Main scripts
 
 * `make_cross-compiler.sh`
-  Builds the MinGW-w64 cross-compilers used to build Windows applications from Linux. It can also build native Windows GCC compilers.
+  Builds the MinGW-w64 cross-compilers used to build Windows applications from Linux. It also builds Windows-native GCC compiler packages for the supported targets.
 
 * `make_pkgs.sh`
   Cross-compiles third-party packages from source for use by Windows applications.
@@ -79,7 +79,7 @@ Typical generated layout:
 └── src
 ```
 
-The `build/` directory contains temporary build trees.
+The `build/` directory contains compiler build trees and per-target completion records. These are valuable reusable artifacts, not disposable test fixtures.
 
 The `install/` directory contains the generated cross-compilers, native Windows compilers and compiled package outputs.
 
@@ -99,7 +99,7 @@ The exact package names depend on the Linux distribution.
 
 ### macOS
 
-macOS support has been tested on Apple Silicon with GCC 16.1.0.
+A previous GCC 16.1.0 build was tested on Apple Silicon. The latest completion-cache changes have been regression-tested with simulated macOS/Homebrew behavior, but have not yet been independently validated in a native macOS integration build.
 
 First install the Xcode Command Line Tools:
 
@@ -182,18 +182,25 @@ The symbolic links are created by `make_cross-compiler.sh`:
 
 They point to the currently selected extracted source directories.
 
-When a new GCC version is selected, or when the `src/cpl/gcc` symbolic link does not match the requested version, the script prepares the compiler sources again:
+Source preparation is tracked separately from build completion. The script checks
+selected source and build-input identities before reusing existing state. It does
+not rely on the `src/cpl/gcc` symbolic link alone as evidence of successful
+preparation. Interrupted preparation is detected and retried as needed.
 
-1. It removes old extracted Binutils, GCC and MinGW-w64 source directories.
-2. It extracts the newest available `mingw-w64-v*.tar.*` archive.
-3. It extracts the newest available `binutils-*.tar.*` archive.
-4. It extracts the selected `gcc-<version>.tar.*` archive.
-5. It recreates the `binutils`, `gcc` and `mingw-w64` symbolic links.
-6. It runs `contrib/download_prerequisites --force` inside the GCC source tree.
-7. It removes the old generated `build/cross`, `build/native`, `install/cross` and `install/native` trees.
-8. It recreates the required build and install directories.
+**Do not manually delete `src/cpl/`, `build/`, or `install/` to force a fresh
+build.** These directories can contain substantial, reusable work. When sources
+or build inputs are incompatible with existing artifacts, the script is designed
+to reject unsafe reuse rather than silently reuse or automatically discard
+valuable build trees.
 
-The special GCC version `git` may also be used, but then `src/cpl/gcc-git` must already exist as a Git checkout. In that case the script runs `git pull` in `src/cpl/gcc-git` and then points `src/cpl/gcc` to that directory.
+The special GCC selection `git` uses `src/cpl/gcc-git`. If no build or
+installation artifacts are present, the script obtains fresh upstream GCC
+sources with a shallow `git clone --depth 1` in a staging directory, then
+publishes that checkout as `src/cpl/gcc-git`. An existing checkout may be moved
+aside and is not guaranteed to be retained after successful preparation.
+If artifacts are already present, the script does not fetch or clone GCC:
+it validates the existing checkout and its recorded source identity before
+continuing. The script does not use `git pull` to update an existing checkout.
 
 ## Building the cross and native compilers
 
@@ -259,6 +266,63 @@ The native compiler ZIP files are written below:
 install/native/
 ```
 
+## Build recovery and completion cache
+
+The compiler driver supports restarting an interrupted build with the same GCC
+selection and compatible build inputs. It revisits incomplete stages using the
+existing build tools and preserves compatible artifacts instead of starting
+from scratch.
+
+After a target has been built, installed, its runtime DLLs relocated, and its
+native ZIP package published, the driver can publish a verified per-target
+completion record under `build/.cross-complete-<target>`. On subsequent runs,
+when the source/configuration identities, record, and metadata of the build and
+install trees and ZIP all match, it skips that target's build, installation,
+and packaging stages entirely. The two target architectures are checked
+independently.
+
+For example, an unchanged repeat may report:
+
+```text
+Verified completed target i686-w64-mingw32; skipping.
+Verified completed target x86_64-w64-mingw32; skipping.
+```
+
+A missing, rejected, or stale record causes normal recovery rather than an
+unverified skip. A cache miss does not necessarily rebuild the toolchain from
+scratch: compatible intermediate artifacts may be reused, although some stages
+can still perform substantial work. The first run after introducing the
+completion-cache feature has no existing completion records and can therefore
+be expensive. Changing only `NCRS` (parallel job count) does not invalidate a
+compatible completed target.
+
+The cache compares filesystem metadata, **not the contents of every artifact**.
+It is not a full content-integrity check and does not guarantee that every
+internal `make` dependency is fresh. It assumes one writer per build prefix;
+do not modify or concurrently build into the same `PREF` while a run is active.
+The cache requires suitable GNU utilities; without them the driver falls back
+to its existing recovery behavior.
+
+For the record format, compatibility guarantees, failure behavior, portability,
+and known limitations, see
+[`docs/cross-compiler-resume-spec.md`](docs/cross-compiler-resume-spec.md).
+
+### Isolated integration testing
+
+Use a separately designated `PREF` for real integration testing, not the
+prefix holding a valuable production toolchain. `PREF` is the root of the
+local source, build, and installation directories used by the driver.
+For example:
+
+```bash
+PREF="$HOME/src/CRS_BLD-validation" NCRS=4 ./make_cross-compiler.sh 16.1.0
+```
+
+Set up and inspect the selected prefix before running this command: an absent
+or incompatible build may perform a full toolchain build. Never remove
+completion records merely to test the cache, because doing so can trigger an
+expensive recovery replay.
+
 ## Checking the generated compilers
 
 After the build has completed, check the generated cross-compilers:
@@ -276,26 +340,11 @@ The diagnostic helper can also be used:
 
 ## Compiler targets
 
-The main supported MinGW-w64 targets are:
-
-* `i686-w64-mingw32`
-* `x86_64-w64-mingw32`
-
-Generated cross-compilers are installed below:
-
-```text
-install/cross/
-├── i686-w64-mingw32
-└── x86_64-w64-mingw32
-```
-
-Generated native Windows compilers, if built, are installed below:
-
-```text
-install/native/
-├── i686-w64-mingw32
-└── x86_64-w64-mingw32
-```
+The supported MinGW-w64 targets are `i686-w64-mingw32` and
+`x86_64-w64-mingw32`. Host cross-compilers are installed under
+`install/cross/<target>/`; native Windows toolchains and ZIP packages are
+installed under `install/native/<target>/` and
+`install/native/<target>.zip`, respectively.
 
 ## Package outputs
 
@@ -340,9 +389,17 @@ order_of_compilation.txt
 
 This repository is not intended to contain the generated compiler or package outputs.
 
-The generated `install/` tree may be large and is machine-local.
+The generated `build/` and `install/` trees may be large and are machine-local. Do not delete them as a routine troubleshooting step.
 
 For reproducibility, keep the build scripts, package configuration files, patches and package order under version control, but keep downloaded sources and generated build outputs out of Git.
+
+## Development guidance
+
+Contributors and coding assistants should read [`AGENTS.md`](AGENTS.md). The
+repository-specific Claude guidance is in [`CLAUDE.md`](CLAUDE.md). Automated
+regression tests are available via `tests/run-cross-compiler-tests.sh` and
+`python3 -m unittest discover -s tests -p 'test_*.py'`; these do not perform
+a real GCC toolchain build.
 
 ## Warranty disclaimer
 
