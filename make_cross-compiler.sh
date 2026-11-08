@@ -22,6 +22,24 @@ function recovery_error() {
   exit 1
 }
 
+# Completion records are disposable; never recursively remove a record path.
+# A directory-valued path (even empty) requires manual inspection, not deletion.
+function invalidate_completion_record() {
+  local record="$1"
+  rm -f -- "$record" || recovery_error "cannot invalidate completion record $record"
+  [[ ! -e "$record" && ! -L "$record" ]] ||
+    recovery_error "cannot invalidate completion record $record (still exists)"
+}
+
+function invalidate_all_completion_records() {
+  local record
+  for record in "$BUILD_DIRECTORY"/.cross-complete-*; do
+    [[ -e "$record" || -L "$record" ]] || continue
+    echo "Invalidating completion record $record before replacing global compatibility records." >&2
+    invalidate_completion_record "$record"
+  done
+}
+
 # Only invocation-owned disposable staging is removed. Source extractions and
 # saved unverified sources remain available for inspection after failures.
 temporary_dirs=()
@@ -95,6 +113,13 @@ for directory in "$BUILD_DIRECTORY"/{cross,native} "$INSTALL_DIRECTORY"/{cross,n
     [[ -z "$entries" ]] || artifacts_present=yes
   fi
 done
+
+# Both global compatibility records are republished on the no-artifacts path.
+# Revoke every old completion before any new identity, source preparation or Git
+# clone can become visible, including records for targets not reached this run.
+if [[ "$artifacts_present" == no ]]; then
+  invalidate_all_completion_records
+fi
 
 GCC_FN=''
 gcc_source="$SOURCE_DIRECTORY/cpl/gcc-git"
@@ -359,17 +384,32 @@ function completion_record_contents() {
   # pipefail applies even when this function is called in an if/assignment.
   digest="$(completion_snapshot "$1" | sha256sum)" || return 1
   [[ "$digest" =~ ^[0-9a-f]{64}'  -'$ ]] || return 1
-  printf 'cross-completion-schema=1\ntarget=%s\npolicy=%s\nmetadata-sha256=%s\n' \
-    "$1" "$completion_policy" "${digest%% *}"
+  printf 'cross-completion-schema=2\ntarget=%s\npolicy=%s\ninputs-sha256=%s\nsources-sha256=%s\nmetadata-sha256=%s\n' \
+    "$1" "$completion_policy" "$completion_inputs" "$completion_sources" "${digest%% *}"
+}
+
+# Hash exact validated record bytes, not their paths or mutable file metadata.
+function completion_file_digest() {
+  local digest
+  digest="$(sha256sum < "$1")" || return 1
+  [[ "$digest" =~ ^[0-9a-f]{64}'  -'$ ]] || return 1
+  printf '%s\n' "${digest%% *}"
 }
 
 completion_enabled=no
 completion_policy=''
+completion_inputs=''
+completion_sources=''
 if completion_capabilities; then
-  # Hash the whole driver and shared logic conservatively, including configure,
-  # install, DLL and packaging policy. Runtime NCRS is deliberately absent.
-  if completion_policy="$(cat -- "$completion_script" "$completion_common" | sha256sum)"; then
-    [[ "$completion_policy" =~ ^[0-9a-f]{64}'  -'$ ]] && completion_enabled=yes
+  # Independently hash each policy file; two fixed-length digests separated by
+  # a colon cannot alias by moving bytes across the file boundary. Runtime NCRS
+  # is absent. Bind completion to both globally validated compatibility records.
+  if completion_driver_digest="$(completion_file_digest "$completion_script")" &&
+     completion_common_digest="$(completion_file_digest "$completion_common")" &&
+     completion_inputs="$(completion_file_digest "$input_record")" &&
+     completion_sources="$(completion_file_digest "$prepared_record")"; then
+    completion_policy="$completion_driver_digest:$completion_common_digest"
+    completion_enabled=yes
   fi
 fi
 if [[ "$completion_enabled" == no ]]; then
@@ -417,9 +457,10 @@ function build_target() {
   fi
   # Invalidate before mkdir, configure, make, installation or packaging. Never
   # write through a symlink and never continue if removal failed.
-  rm -f -- "$completion_record" || recovery_error "cannot invalidate completion record for $TRG"
-  [[ ! -e "$completion_record" && ! -L "$completion_record" ]] ||
-    recovery_error "completion record still exists for $TRG"
+  if [[ -e "$completion_record" || -L "$completion_record" ]]; then
+    echo "Completion record for $TRG is stale, invalid or unusable; revisiting target." >&2
+  fi
+  invalidate_completion_record "$completion_record"
   mkdir -p -- "$BUILD_DIRECTORY"/{cross,native}/"$TRG"/{binutils,gcc,mingw-w64}
   mkdir -p -- "$BUILD_DIRECTORY/cross/$TRG/mingw-w64-headers"
   mkdir -p -- "$INSTALL_DIRECTORY"/{cross,native}/"$TRG"

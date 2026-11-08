@@ -40,6 +40,11 @@ The solution must preserve existing successful build behavior on Linux and macOS
   and ZIP publication succeeded; it does not prove freshness of every internal
   `make` dependency.
 - Validate source/configuration compatibility before trusting a completion record.
+  Bind each record to cryptographic identities of both validated global records,
+  `.cross-inputs` and `.cross-prepared`. Before legitimately republishing either
+  global record on the no-artifacts path, invalidate every existing target
+  completion record, before any source preparation or other relevant mutation.
+  Abort on invalidation failure without changing the global compatibility identity.
   Validate the saved metadata of the target's cross/native build and installation
   trees and ZIP before skipping any stage. A ZIP alone never proves completion.
 - On missing, invalid, incompatible or stale completion metadata, continue using
@@ -48,26 +53,40 @@ The solution must preserve existing successful build behavior on Linux and macOS
 - Invalidate the previous target record before the first target mutation; abort if
   invalidation fails. Publish a new record atomically only after the entire target
   pipeline and metadata scan succeed. Failed/interrupted work must not publish one.
+- If the post-build completion scan fails, preserve the completed artifacts and
+  published ZIP, publish no completion record, and fail the invocation. A subsequent
+  run uses recovery until the scan can succeed; this conservative failure is deliberate.
 - Do not introduce an unnecessary per-stage checkpoint system.
 - Do not require an explicit `--resume` argument for ordinary recovery.
 
-#### Completion record and validation (schema 1)
+#### Completion record and validation (schema 2)
 
 `$BUILD_DIRECTORY/.cross-complete-$TRG` is a regular, readable, non-symlink file
-with exactly four newline-terminated lines:
+with exactly six newline-terminated lines:
 
 ```text
-cross-completion-schema=1
+cross-completion-schema=2
 target=<target triple>
-policy=<SHA-256 of driver followed by common.sh>  -
+policy=<SHA-256 of driver>:<SHA-256 of common.sh>
+inputs-sha256=<SHA-256 of validated .cross-inputs bytes>
+sources-sha256=<SHA-256 of validated .cross-prepared bytes>
 metadata-sha256=<SHA-256 of serialized metadata>
 ```
 
-The policy hashes the full contents of `make_cross-compiler.sh` followed by
+The policy independently hashes the full contents of `make_cross-compiler.sh` and
 `etc/common.sh`, covering configuration, build order, installation, DLL selection
-and packaging conservatively. Comment changes can cause a harmless miss. Runtime
-`NCRS` is excluded. Existing global input and prepared-source checks remain
-mandatory; existing component configure-argument rejection remains in force.
+and packaging conservatively. Two fixed-length hexadecimal digests with an explicit
+separator avoid ambiguity at the file boundary. Comment changes and unrelated
+`common.sh` helper edits can cause harmless misses. Runtime `NCRS` is excluded.
+Existing global input and prepared-source checks remain mandatory; existing
+component configure-argument rejection remains in force. The two compatibility
+digests bind exact validated file bytes, including final newlines. Schema 1 records
+are rejected and replaced through recovery. Record rejection prints a diagnostic.
+
+Global invalidation includes all `.cross-complete-*` paths, even malformed records
+or unexpected target names. Regular files and symlinks are unlinked without
+following links. A directory-valued path is preserved and aborts the invocation;
+it is never recursively removed. Per-target invalidation uses the same safeguards.
 
 Metadata roots, in order, are `build/cross/$TRG`, `build/native/$TRG`,
 `install/cross/$TRG`, `install/native/$TRG`, and `install/native/$TRG.zip`, relative
@@ -110,6 +129,10 @@ after safe ZIP publication and successful scanning.
   limited by the underlying filesystem even when GNU stat prints nine digits.
   Inode reuse and coarse timestamps can reduce detection. This is not a content
   integrity or authenticity guarantee; users able to forge records are trusted.
+- Conversely, device/inode changes after copies, restores, remounts, device
+  renumbering, overlay copy-up or on some network/FUSE filesystems cause safe
+  misses, even if the contents are unchanged. The metadata fields are retained
+  conservatively; cache availability across filesystems is not guaranteed.
 - ACLs, extended attributes and filesystem-specific flags are not independently
   serialized; changes usually affect ctime, but metadata-preserving changes need
   not be detected. External symlink referents are not traversed. Source validation
@@ -123,6 +146,18 @@ after safe ZIP publication and successful scanning.
 - Atomic rename prevents partially written records from being accepted, but there
   is no fsync-based power-loss durability guarantee. Completion also does not prove
   reproducibility, compiler correctness, or every internal dependency's freshness.
+- The policy covers driver/shared-script contents and the existing compatibility
+  checks cover their selected host tools. It does not fingerprint every helper
+  binary, including `zip` and utilities used for DLL selection. Upgrading those
+  helpers alone can keep an existing completed package valid; this cache confirms
+  pipeline completion under the saved inputs rather than freshness of every tool.
+- The capability probe checks GNU identity, simple quoting and timestamps, but
+  does not round-trip hostile names at runtime. Hostile-name serialization is
+  regression-tested on modern GNU tools. Legacy GNU releases that silently ignore
+  `QUOTING_STYLE` are not validated; use current GNU coreutils (Homebrew on macOS).
+- SIGKILL or power loss can leave invocation-owned `.cross-completion.*` and
+  `.cross-package.*` staging directories. They cannot authorize a hit and are not
+  automatically swept. Ordinary failure/termination cleans invocation-owned staging.
 
 ### R5. Changed build inputs
 

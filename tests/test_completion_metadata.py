@@ -90,6 +90,33 @@ class Metadata(unittest.TestCase):
     def test_non_gnu_tool_disables_caching(self):
         self.shell('stat() { echo "BSD stat"; }; completion_capabilities', ok=False)
 
+    def test_snapshot_roots_order_framing_and_zip_basename(self):
+        target = "test-target"
+        roots = [f"{top}/{kind}/{target}" for top in ("build", "install")
+                 for kind in ("cross", "native")]
+        for root in roots:
+            (self.root / root).mkdir(parents=True)
+        archive = self.root / f"install/native/{target}.zip"
+        archive.write_bytes(b"zip")
+        code = ('PREF="$1"; BUILD_DIRECTORY="$1/build"; '
+                'INSTALL_DIRECTORY="$1/install"; completion_snapshot test-target')
+        fields = self.shell(code, self.root).split(b"\0")
+        self.assertEqual(fields.pop(), b"")
+        expected = roots + [f"install/native/{target}.zip"]
+        self.assertEqual(len(fields), 5 * 12)  # root tag + one 11-field entry
+        for i, root in enumerate(expected):
+            self.assertEqual(fields[12 * i], f"root={root}".encode())
+            self.assertEqual(fields[12 * i + 11],
+                             b"'.'" if i < 4 else b"'test-target.zip'")
+        for root in [self.root / r for r in roots] + [archive]:
+            saved = root.with_name(root.name + ".saved")
+            root.rename(saved)
+            self.shell(code, self.root, ok=False)  # any missing root rejects
+            root.symlink_to(saved, target_is_directory=saved.is_dir())
+            self.shell(code, self.root, ok=False)  # even a correct referent rejects
+            root.unlink()
+            saved.rename(root)
+
     def test_unsupported_quoting_style_disables_caching(self):
         self.shell('stat() { '
                    'if [[ ${QUOTING_STYLE-} == shell-escape-always ]]; then '

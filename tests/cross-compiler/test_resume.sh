@@ -76,21 +76,26 @@ t_r4_rerun_after_success_preserves_everything() {
   new_sandbox; default_sources
   build_ok 13.2.0
   plant_sentinels
-  build_ok 13.2.0
-  snapshot_dir "$PREF/build" "$SB/build.before"
+  snapshot_build_artifacts "$SB/build.before"
   snapshot_dir "$PREF/src" "$SB/src.before"
   run_crs -- 13.2.0
-  assert_rc0 "repeated invocation"
-  assert_eq "$(count configure 3)" 0 "no reconfiguration"
-  assert_eq "$(count prereq 3)" 0 "no repeated source preparation"
-  assert_eq "$(git_mutation_count 3)" 0 "no repeated source preparation"
-  assert_eq "$(lines make 3 | awk -F'\t' '$5=="built"' | wc -l | tr -d ' ')" 0 "nothing recompiled"
-  snapshot_dir "$PREF/build" "$SB/build.after"
+  assert_rc0 "recovery replay"
+  assert_target_replayed 2 "$T32"
+  assert_target_replayed 2 "$T64"
+  assert_eq "$(count configure 2)" 0 "no reconfiguration"
+  assert_eq "$(count prereq 2)" 0 "no repeated source preparation"
+  assert_eq "$(git_mutation_count 2)" 0 "no repeated source preparation"
+  assert_eq "$(lines make 2 | awk -F'\t' '$5=="built"' | wc -l | tr -d ' ')" 0 "nothing recompiled"
+  snapshot_build_artifacts "$SB/build.after"
   snapshot_dir "$PREF/src" "$SB/src.after"
   assert_same_snapshot "$SB/build.before" "$SB/build.after" "build tree changed on repeated run"
   assert_same_snapshot "$SB/src.before" "$SB/src.after" "source tree changed on repeated run"
   assert_sentinels_intact
   assert_packaged
+  run_crs -- 13.2.0
+  assert_rc0 "completed repeat"
+  assert_run_idle 3
+  assert_sentinels_intact
 }
 
 t_r4_third_invocation_still_succeeds() {

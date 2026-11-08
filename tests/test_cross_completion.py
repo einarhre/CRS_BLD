@@ -11,6 +11,7 @@ Every test first requires a genuine cache hit, so none passes on an
 implementation that always replays the stages.
 """
 import os
+import hashlib
 from pathlib import Path
 import shlex
 import shutil
@@ -124,6 +125,110 @@ class Completion(unittest.TestCase):
 
     # ---- hits --------------------------------------------------------------
 
+    def move_target_parents_aside(self):
+        parents = [Path(top) / kind for top in ("build", "install")
+                   for kind in ("cross", "native")]
+        for parent in parents:
+            (self.root / parent).rename(self.root / ("saved-" + str(parent).replace("/", "-")))
+        return parents
+
+    def restore_target_parents(self, parents):
+        for parent in parents:
+            current = self.root / parent
+            if current.exists():
+                current.rename(self.root / ("partial-" + str(parent).replace("/", "-")))
+            (self.root / ("saved-" + str(parent).replace("/", "-"))).rename(current)
+
+    def test_old_trees_after_changed_inputs_are_not_a_cache_hit(self):
+        # Opus M1: moving the parents preserves all snapshotted target metadata.
+        self.fixture.env["CFLAGS"] = "-O2"
+        self.complete()
+        self.assert_hit()
+        parents = self.move_target_parents_aside()
+        self.fixture.env["CFLAGS"] = "-O0"
+        self.build(ok=False, FAIL_MAKE=f"cross/{T32}/binutils:-j 2", INTERRUPT="yes")
+        self.assertIn("CFLAGS=x:-O0", (self.root / "build/.cross-inputs").read_text())
+        self.restore_target_parents(parents)
+        before = len(self.lines_for(T64, "make"))
+        output = self.build()
+        self.assertNotIn(f"Verified completed target {T64}", output)
+        self.assertGreater(len(self.lines_for(T64, "make")), before)
+        self.assert_hit()
+
+    def test_restored_old_record_is_bound_to_new_inputs(self):
+        self.fixture.env["CFLAGS"] = "-O2"
+        self.complete()
+        old = (self.root / f"build/.cross-complete-{T64}").read_bytes()
+        parents = self.move_target_parents_aside()
+        self.fixture.env["CFLAGS"] = "-O0"
+        self.build(ok=False, FAIL_MAKE=f"cross/{T32}/binutils:-j 2")
+        self.restore_target_parents(parents)
+        # Restoring the record as well must not bypass the independent binding.
+        (self.root / f"build/.cross-complete-{T64}").write_bytes(old)
+        before = len(self.lines_for(T64, "make"))
+        self.build()
+        self.assertGreater(len(self.lines_for(T64, "make")), before)
+        self.assert_hit()
+
+    def test_global_rewrite_invalidates_all_records_before_publication(self):
+        self.complete()
+        self.move_target_parents_aside()
+        self.build(ok=False, FAIL_PREP="yes")
+        self.assertFalse(list((self.root / "build").glob(".cross-complete-*")))
+
+    def test_records_bind_exact_validated_compatibility_bytes(self):
+        self.complete()
+        self.assert_hit()
+        policy = ":".join(hashlib.sha256(path.read_bytes()).hexdigest() for path in
+                          (self.root / "make_cross-compiler.sh", self.root / "etc/common.sh"))
+        self.assertIn(f"policy={policy}\n",
+                      (self.root / f"build/.cross-complete-{T32}").read_text())
+        for name, field in [(".cross-inputs", "inputs-sha256"),
+                            (".cross-prepared", "sources-sha256")]:
+            path = self.root / "build" / name
+            expected = hashlib.sha256(path.read_bytes()).hexdigest()
+            for target in (T32, T64):
+                text = (self.root / f"build/.cross-complete-{target}").read_text()
+                self.assertIn(f"{field}={expected}\n", text)
+            # Existing compatibility checks ignore trailing newlines; exact byte
+            # binding must nevertheless reject the old record independently.
+            path.write_bytes(path.read_bytes() + b"\n")
+            before = [len(self.lines_for(t, "make")) for t in (T32, T64)]
+            self.build()
+            self.assertEqual([len(self.lines_for(t, "make")) for t in (T32, T64)],
+                             [n + 17 for n in before])
+            self.assert_hit()
+
+    def test_global_rewrite_removes_malformed_and_symlink_records_safely(self):
+        self.complete()
+        self.move_target_parents_aside()
+        (self.root / f"build/.cross-complete-{T32}").write_bytes(b"bad\0record")
+        record = self.root / f"build/.cross-complete-{T64}"
+        record.unlink()
+        destination = self.root / "valuable-record-copy"
+        destination.mkdir()
+        (destination / "keep").write_text("valuable")
+        record.symlink_to(destination, target_is_directory=True)
+        (self.root / "build/.cross-complete-dangling").symlink_to(self.root / "absent")
+        self.build(ok=False, FAIL_PREP="yes")
+        self.assertFalse(list((self.root / "build").glob(".cross-complete-*")))
+        self.assertEqual((destination / "keep").read_text(), "valuable")
+
+    def test_global_invalidation_failure_preserves_compatibility_and_sources(self):
+        self.complete()
+        self.move_target_parents_aside()
+        inputs = self.root / "build/.cross-inputs"
+        prepared = self.root / "build/.cross-prepared"
+        before = inputs.read_bytes(), prepared.read_bytes(), self.events()
+        record = self.root / f"build/.cross-complete-{T64}"
+        record.unlink()
+        record.mkdir()
+        (record / "keep").write_text("preserve")
+        output = self.build(ok=False, CFLAGS="-O0")
+        self.assertIn("cannot invalidate completion record", output)
+        self.assertEqual((inputs.read_bytes(), prepared.read_bytes(), self.events()), before)
+        self.assertEqual((record / "keep").read_text(), "preserve")
+
     def test_failed_invalidation_stops_before_target_mutation(self):
         self.complete()
         self.assert_hit()
@@ -145,6 +250,45 @@ exec {real_rm} "$@"
             self.assertEqual((self.events(), self.tree_state()), before)
         (self.bin / "rm").unlink()
         self.build()
+        self.assert_hit()
+
+    def test_directory_record_aborts_replay_without_deleting_contents(self):
+        self.complete()
+        record = self.root / f"build/.cross-complete-{T32}"
+        record.unlink()
+        record.mkdir()
+        (record / "keep").write_text("valuable")
+        before = self.events(), self.tree_state()
+        output = self.build(ok=False)
+        self.assertIn("cannot invalidate completion record", output)
+        self.assertEqual((self.events(), self.tree_state()), before)
+        self.assertEqual((record / "keep").read_text(), "valuable")
+
+    def test_common_policy_change_replays_and_then_hits(self):
+        self.complete()
+        self.assert_hit()
+        common = self.root / "etc/common.sh"
+        common.write_text(common.read_text() + "\n# independent policy change\n")
+        before = [len(self.lines_for(t, "make")) for t in (T32, T64)]
+        output = self.build()
+        self.assertIn("stale, invalid or unusable; revisiting target", output)
+        self.assertEqual([len(self.lines_for(t, "make")) for t in (T32, T64)],
+                         [n + 17 for n in before])
+        self.assert_hit()
+
+    def test_disabled_cache_revokes_existing_records_and_replays(self):
+        for tool in ("stat", "sha256sum"):
+            self.complete()
+            self.assert_hit()
+            self.fixture.write_exec(self.bin / tool, '#!/bin/bash\necho BSD-tool\n')
+            before = [len(self.lines_for(t, "make")) for t in (T32, T64)]
+            output = self.build()
+            self.assertIn("Completion caching disabled", output)
+            self.assertFalse(list((self.root / "build").glob(".cross-complete-*")))
+            self.assertEqual([len(self.lines_for(t, "make")) for t in (T32, T64)],
+                             [n + 17 for n in before])
+            (self.bin / tool).unlink()
+        self.complete()
         self.assert_hit()
 
     def test_failed_post_build_scan_never_publishes_record(self):

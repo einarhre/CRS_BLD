@@ -3,10 +3,10 @@
 ## Implemented contract and review notes
 
 The production implementation now uses `build/.cross-complete-<target>` and
-schema 1, described in R4 of `docs/cross-compiler-resume-spec.md`. It hashes
-metadata from GNU find/sort/xargs/stat with SHA-256. Its policy identity hashes
-the complete driver followed by `common.sh`; this deliberately permits harmless
-comment edits to cause misses. Unsupported GNU metadata/digest capabilities
+schema 2, described in R4 of `docs/cross-compiler-resume-spec.md`. It hashes
+metadata from GNU find/sort/xargs/stat with SHA-256. Its policy identity independently
+hashes the complete driver and `common.sh`; this deliberately permits harmless
+comment edits to cause misses. Detected unsupported GNU metadata/digest capabilities
 disable caching. A failed post-build scan stops without publishing a record.
 The design decisions listed at the end of this document are historical planning
 questions; the specification now records the selected behavior.
@@ -23,9 +23,12 @@ as test provenance. Changes to the older tests preserve their recovery purposes:
   The stable-packaging test removes only its completion record, so it still
   verifies identical packages from identical artifacts. The third-invocation test
   deliberately changes the target on each retry to retain replay coverage.
-- Tests that plant build sentinels certify those added artifacts before taking
-  whole-tree snapshots around a completed repeat. The job-count test also checks
-  that a real recovery uses the new job count before checking the idle repeat.
+- The three preservation/job-count/Git tests take snapshots after planting
+  sentinels, assert the actual replay (including no reconfiguration, compilation,
+  source refresh or artifact loss), and only then check a separate completed hit.
+  Build snapshots exclude only the two exact top-level completion-record paths
+  and their checksum lines. Git-source contents and aged timestamps are asserted
+  unchanged across the replay and the hit. Recovery uses the requested job count.
 - Configure-argument rejection snapshots omit only the two exact top-level
   completion-record paths and their checksum lines: invalidation is required
   before entering target recovery. All other file/path preservation assertions
@@ -40,12 +43,42 @@ nanosecond times, symlink destinations, directory metadata, special permissions,
 unusual names, deterministic output, late pipeline/digest errors, non-GNU tools
 and unsupported quoting styles.
 
-Final implementation verification on Linux (isolated fixtures only):
+### Follow-up to the independent Opus review of `74a0a35`
+
+M1 was reproduced before the fix by the new
+`test_old_trees_after_changed_inputs_are_not_a_cache_hit`: build with `CFLAGS=-O2`,
+rename all four build/install parent trees aside, continue with `CFLAGS=-O0`,
+interrupt the first target, restore old parents by rename, and continue with `-O0`.
+On `74a0a35` the second target incorrectly skipped. The corrected test requires
+recovery and then an unchanged hit. A second test also restores the old completion
+record to pin the independent identity binding. Further tests verify exact SHA-256
+bindings for both global records, revocation of every record before preparation,
+failure before global publication, malformed/dangling/directory-valued record
+paths, and preservation of symlink referents. No valuable fixture trees are deleted
+to reproduce the scenario: partial and completed trees are moved aside by rename.
+
+M2 restores the replay assertions in `test_resume.sh`, `test_inputs.sh`, and
+`test_git.sh`. Both target replay sequences are explicitly asserted on run 2,
+alongside the original preservation guarantees; run 3 must execute no build,
+configuration, packaging or source-preparation tools. These assertions are separate.
+
+| Finding | Disposition and remaining scope |
+|---|---|
+| L1: post-build scan failure | Keep the conservative failure: artifacts and ZIP remain, invocation fails, no completion record. Documented in R4 and exercised by the late post-build scan regression. |
+| L2: rejected record diagnostic | Added for target rejection and for revocation before global compatibility replacement. |
+| L3: device/inode safe misses | Retain required metadata fields; document safe misses after copying, remounting, device renumbering and overlay copy-up. These cost recovery work but cannot authorize stale hits. |
+| L4: policy identity | Fixed file-boundary ambiguity using two separately validated SHA-256 values. Whole-file `common.sh` coupling is retained conservatively; reducing it is unnecessary for correctness. Unfingerprinted helper upgrades may retain completed packages and are documented. |
+| L5: hostile-name runtime capability probe | Deferred. Supported current GNU deployments and hostile-name serialization tests pass; a temporary runtime symlink probe for legacy GNU releases is separate portability hardening. The simple probe's limitation and lack of legacy validation are explicit in R4. |
+| L6: durability barrier | Deferred. Metadata validation is not storage-integrity verification, and this change does not promise power-loss durability. Filesystem-specific fsync/flush guarantees require separate design; the existing baseline also trusts metadata after recovery. |
+| L7: SIGKILL staging leftovers | Documented; harmless staging directories cannot authorize a hit. No automatic sweep is added, avoiding removal of directories whose ownership cannot be established. |
+| L8: missing tests | Added snapshot root order/framing/ZIP basename/missing and symlink roots, `common.sh` policy change, disabled caching with valid records, directory records, and the M1 regressions. |
+
+Follow-up verification on Linux (isolated fixtures only):
 
 | Command | Result |
 |---|---|
 | `tests/run-cross-compiler-tests.sh` | 345 passed, 0 failed, 0 advisory failures, 10 skipped |
-| `python3 -m unittest discover -s tests -p 'test_*.py'` | 82 run, 81 passed, 1 skipped, no failures |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | 92 run, 91 passed, 1 skipped, no failures |
 | `bash -n` on all 65 repository shell files | Passed |
 | `git diff --check` | Passed |
 

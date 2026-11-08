@@ -622,6 +622,11 @@ snapshot_dir() { # dir outfile
     }
   ) > "$2"
 }
+# Only disposable top-level completion records may change during a replay.
+snapshot_build_artifacts() { # outfile
+  snapshot_dir "$PREF/build" "$1.full"
+  sed -E '/^(\.\/|[0-9]+ [0-9]+ \.\/)\.cross-complete-(i686|x86_64)-w64-mingw32$/d' "$1.full" > "$1"
+}
 snapshot_pref() { snapshot_dir "$PREF" "$1"; }
 
 assert_same_snapshot() { # a b message
