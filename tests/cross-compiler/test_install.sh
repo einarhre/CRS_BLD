@@ -31,6 +31,7 @@ t_r6_missing_dll_is_an_error() {
 t_r6_repeated_invocation_after_complete_build_succeeds() {
   new_sandbox; default_sources
   build_ok 13.2.0 "${STRICT[@]}"
+  touch "$PREF/install/native/$T32/recovery-trigger" # Require replay.
   run_crs "${STRICT[@]}" -- 13.2.0
   assert_rc0 "second invocation after a successful build"
   assert_packaged
@@ -53,6 +54,7 @@ t_r6_retry_after_second_target_failure_revisits_first_target() {
   new_sandbox; default_sources
   run_crs "${STRICT[@]}" "MOCK_FAIL=make:cross/$T64/gcc:all-gcc" -- 13.2.0
   assert_rc_nonzero "first run"
+  touch "$PREF/install/native/$T32/recovery-trigger" # Require replay.
   run_crs "${STRICT[@]}" -- 13.2.0
   assert_rc0 "retry"
   assert_packaged
@@ -211,6 +213,7 @@ t_r6_repeated_packaging_is_stable() {
   new_sandbox; default_sources
   build_ok 13.2.0
   cp "$PREF/install/native/$T32.zip" "$SB/first.zip"
+  rm -- "$PREF/build/.cross-complete-$T32" # Repackage identical artifacts.
   build_ok 13.2.0
   assert_same_snapshot "$SB/first.zip" "$PREF/install/native/$T32.zip" "package changed on repeat"
   assert_packaged

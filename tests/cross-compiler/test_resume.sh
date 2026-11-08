@@ -76,14 +76,15 @@ t_r4_rerun_after_success_preserves_everything() {
   new_sandbox; default_sources
   build_ok 13.2.0
   plant_sentinels
+  build_ok 13.2.0
   snapshot_dir "$PREF/build" "$SB/build.before"
   snapshot_dir "$PREF/src" "$SB/src.before"
   run_crs -- 13.2.0
   assert_rc0 "repeated invocation"
-  assert_eq "$(count configure 2)" 0 "no reconfiguration"
-  assert_eq "$(count prereq 2)" 0 "no repeated source preparation"
-  assert_eq "$(git_mutation_count 2)" 0 "no repeated source preparation"
-  assert_eq "$(lines make 2 | awk -F'\t' '$5=="built"' | wc -l | tr -d ' ')" 0 "nothing recompiled"
+  assert_eq "$(count configure 3)" 0 "no reconfiguration"
+  assert_eq "$(count prereq 3)" 0 "no repeated source preparation"
+  assert_eq "$(git_mutation_count 3)" 0 "no repeated source preparation"
+  assert_eq "$(lines make 3 | awk -F'\t' '$5=="built"' | wc -l | tr -d ' ')" 0 "nothing recompiled"
   snapshot_dir "$PREF/build" "$SB/build.after"
   snapshot_dir "$PREF/src" "$SB/src.after"
   assert_same_snapshot "$SB/build.before" "$SB/build.after" "build tree changed on repeated run"
@@ -95,7 +96,9 @@ t_r4_rerun_after_success_preserves_everything() {
 t_r4_third_invocation_still_succeeds() {
   new_sandbox; default_sources
   build_ok 13.2.0
+  touch "$PREF/install/native/$T32/recovery-trigger" # Require replay.
   build_ok 13.2.0
+  touch "$PREF/install/native/$T32/recovery-trigger"
   build_ok 13.2.0
   assert_packaged
 }

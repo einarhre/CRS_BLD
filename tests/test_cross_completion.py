@@ -124,6 +124,44 @@ class Completion(unittest.TestCase):
 
     # ---- hits --------------------------------------------------------------
 
+    def test_failed_invalidation_stops_before_target_mutation(self):
+        self.complete()
+        self.assert_hit()
+        record = self.root / f"build/.cross-complete-{T32}"
+        saved = record.read_bytes()
+        (self.native(T32) / "changed").touch()
+        real_rm = shlex.quote(shutil.which("rm"))
+        before = self.events(), self.tree_state()
+        for status in (1, 0):
+            # Also reject a tool that claims success without removing the file.
+            self.fixture.write_exec(self.bin / "rm", f'''#!/bin/bash
+for arg in "$@"; do
+  [[ $arg != "$PREF/build/.cross-complete-{T32}" ]] || exit {status}
+done
+exec {real_rm} "$@"
+''')
+            self.build(ok=False)
+            self.assertEqual(record.read_bytes(), saved)
+            self.assertEqual((self.events(), self.tree_state()), before)
+        (self.bin / "rm").unlink()
+        self.build()
+        self.assert_hit()
+
+    def test_failed_post_build_scan_never_publishes_record(self):
+        real_stat = shlex.quote(shutil.which("stat"))
+        self.fixture.write_exec(self.bin / "stat", f'''#!/bin/bash
+{real_stat} "$@" || exit
+case "$PWD" in "$PREF/build/"*|"$PREF/install/native") exit 1;; esac
+''')
+        self.build(ok=False)
+        self.assertTrue(self.archive(T32).is_file())
+        self.assertFalse((self.root / f"build/.cross-complete-{T32}").exists())
+        (self.bin / "stat").unlink()
+        before = len(self.lines_for(T32, "make"))
+        self.complete()
+        self.assertGreater(len(self.lines_for(T32, "make")), before)
+        self.assert_hit()
+
     def test_unchanged_repeats_and_job_count_changes_do_nothing(self):
         self.complete()
         archives = {t: self.archive(t).read_bytes() for t in (T32, T64)}
@@ -270,6 +308,9 @@ class Completion(unittest.TestCase):
 
     def test_record_with_appended_data(self):
         self.damaged_record_is_replayed(lambda p: p.write_bytes(p.read_bytes() + b"surplus\n"))
+
+    def test_record_with_appended_nul_is_rejected(self):
+        self.damaged_record_is_replayed(lambda p: p.write_bytes(p.read_bytes() + b"\0"))
 
     def test_symlinked_record_is_never_trusted_or_written_through(self):
         copies = []

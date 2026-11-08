@@ -5,16 +5,18 @@ t_r5_changing_only_job_count_keeps_build() {
   new_sandbox; default_sources
   build_ok 13.2.0 NCRS=2
   plant_sentinels
+  build_ok 13.2.0 NCRS=5
   snapshot_dir "$PREF/build" "$SB/build.before"
   run_crs NCRS=5 -- 13.2.0
   assert_rc0 "run with different NCRS"
-  assert_eq "$(count configure 2)" 0 "different -j must not trigger reconfiguration"
-  assert_eq "$(count prereq 2)" 0 "different -j must not trigger source preparation"
+  assert_eq "$(count configure 3)" 0 "different -j must not trigger reconfiguration"
+  assert_eq "$(count prereq 3)" 0 "different -j must not trigger source preparation"
   snapshot_dir "$PREF/build" "$SB/build.after"
   assert_same_snapshot "$SB/build.before" "$SB/build.after" "build tree must be untouched"
   assert_sentinels_intact
+  assert_eq "$(count make 3)" 0 "completed target skips make regardless of job count"
   lines make 2 | awk -F'\t' '$4!=""{print $4}' | sort -u > "$SB/jobs"
-  assert_eq "$(cat "$SB/jobs")" 5 "new job count is used"
+  assert_eq "$(cat "$SB/jobs")" 5 "recovery used the new job count"
 }
 
 t_r5_decreasing_job_count_keeps_build() {

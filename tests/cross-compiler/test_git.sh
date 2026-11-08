@@ -129,13 +129,14 @@ t_git_continuation_after_success_does_not_fetch_or_touch() {
   add_git_upstream "$UP1"
   build_ok git
   plant_sentinels
+  build_ok git
   set_upstream_commit "$UP2"
   age_tree "$PREF/src/cpl/gcc-git"
   snapshot_dir "$PREF/src" "$SB/src.before"
   snapshot_dir "$PREF/build" "$SB/build.before"
   run_crs -- git
   assert_rc0 "repeated git build"
-  assert_eq "$(git_mutation_count 2)" 0 "no fetch/clone/pull on continuation: $(git_mutations 2)"
+  assert_eq "$(git_mutation_count 3)" 0 "no fetch/clone/pull on continuation: $(git_mutations 3)"
   assert_eq "$(git_head)" "$UP1" "pinned commit changed"
   assert_eq "$(cat "$PREF/src/cpl/gcc-git/UPSTREAM_REV")" "$UP1" "checkout contents changed"
   assert_tree_timestamps_unchanged "$PREF/src/cpl/gcc-git" "source timestamps changed on continuation"
@@ -143,8 +144,8 @@ t_git_continuation_after_success_does_not_fetch_or_touch() {
   snapshot_dir "$PREF/build" "$SB/build.after"
   assert_same_snapshot "$SB/src.before" "$SB/src.after" "source tree changed"
   assert_same_snapshot "$SB/build.before" "$SB/build.after" "build tree changed"
-  assert_eq "$(count configure 2)" 0 "no reconfiguration"
-  assert_eq "$(count prereq 2)" 0 "prerequisites downloaded again"
+  assert_eq "$(count configure 3)" 0 "no reconfiguration"
+  assert_eq "$(count prereq 3)" 0 "prerequisites downloaded again"
   assert_sentinels_intact
   assert_packaged
 }

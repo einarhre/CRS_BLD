@@ -10,6 +10,8 @@ fi
 
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/etc/common.sh"
+completion_script="$script_dir/make_cross-compiler.sh"
+completion_common="$script_dir/etc/common.sh"
 unset script_dir
 
 declare -rA DLLS=(["${TRG64}"]="libgcc_s_seh-1.dll" ["${TRG32}"]="libgcc_s_sjlj-1.dll")
@@ -303,9 +305,76 @@ if [[ "$artifacts_present" == no ]]; then
   mv -- "$record_tmp" "$prepared_record"
 fi
 
-mkdir -p -- "$BUILD_DIRECTORY"/{cross,native}/{"$TRG32","$TRG64"}/{binutils,gcc,mingw-w64}
-mkdir -p -- "$BUILD_DIRECTORY"/cross/{"$TRG32","$TRG64"}/mingw-w64-headers
-mkdir -p -- "$INSTALL_DIRECTORY"/{cross,native}/{"$TRG32","$TRG64"}
+# Cache scans require GNU stat's nanosecond timestamps and quoted link names,
+# GNU find/sort/xargs NUL handling, and SHA-256. Homebrew supplies these via
+# common.sh on macOS. Unsupported tools disable caching, never authorize a hit.
+function completion_capabilities() {
+  local tool version timestamps quoted_root
+  for tool in find sort xargs stat sha256sum; do
+    version="$("$tool" --version)" || return 1
+    [[ "$version" == *GNU* ]] || return 1
+  done
+  # Reject GNU versions that diagnose an unsupported quoting style, even if
+  # stat otherwise exits successfully and falls back to ambiguous link names.
+  quoted_root="$(LC_ALL=C QUOTING_STYLE=shell-escape-always stat --printf='%N' -- / 2>&1)" || return 1
+  [[ "$quoted_root" == "'/'" ]] || return 1
+  # Exercise the actual option set as well as identifying GNU implementations.
+  find "$completion_script" -maxdepth 0 -print0 | sort -z |
+    xargs -0 -r stat --printf='%f\0%d\0%i\0%s\0%a\0%u\0%g\0%h\0%y\0%z\0%N\0' -- > /dev/null || return 1
+  timestamps="$(LC_ALL=C TZ=UTC stat --printf='%y|%z' -- "$completion_script")" || return 1
+  [[ "$timestamps" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}' '[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}' +0000|'[0-9]{4}-[0-9]{2}-[0-9]{2}' '[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}' +0000'$ ]] || return 1
+  [[ "$(printf '' | sha256sum)" == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -' ]]
+}
+
+# Each entry has eleven NUL-terminated fields. stat %N quotes both the path and
+# symlink destination with a fixed GNU quoting style; no filename delimiters are
+# interpreted. Sort raw relative paths, not metadata fields, before batching stat.
+# Do not follow symlinks. Include root directory metadata and hard-link counts.
+function completion_tree_metadata() (
+  export LC_ALL=C TZ=UTC QUOTING_STYLE=shell-escape-always
+  cd -- "$1" || exit 1
+  find . -print0 | sort -z |
+    xargs -0 -r stat --printf='%f\0%d\0%i\0%s\0%a\0%u\0%g\0%h\0%y\0%z\0%N\0' --
+)
+
+function completion_snapshot() (
+  local target="$1" root
+  export LC_ALL=C TZ=UTC QUOTING_STYLE=shell-escape-always
+  for root in "$BUILD_DIRECTORY/cross/$target" "$BUILD_DIRECTORY/native/$target" \
+              "$INSTALL_DIRECTORY/cross/$target" "$INSTALL_DIRECTORY/native/$target"; do
+    [[ -d "$root" && ! -L "$root" ]] || exit 1
+    printf 'root=%s\0' "${root#"$PREF"/}" || exit 1
+    completion_tree_metadata "$root" || exit 1
+  done
+  root="$INSTALL_DIRECTORY/native/$target.zip"
+  [[ -f "$root" && ! -L "$root" ]] || exit 1
+  printf 'root=install/native/%s.zip\0' "$target" || exit 1
+  # The ZIP is a separate fifth root; serialize only its basename.
+  cd -- "$INSTALL_DIRECTORY/native" || exit 1
+  stat --printf='%f\0%d\0%i\0%s\0%a\0%u\0%g\0%h\0%y\0%z\0%N\0' -- "$target.zip"
+)
+
+function completion_record_contents() {
+  local digest
+  # pipefail applies even when this function is called in an if/assignment.
+  digest="$(completion_snapshot "$1" | sha256sum)" || return 1
+  [[ "$digest" =~ ^[0-9a-f]{64}'  -'$ ]] || return 1
+  printf 'cross-completion-schema=1\ntarget=%s\npolicy=%s\nmetadata-sha256=%s\n' \
+    "$1" "$completion_policy" "${digest%% *}"
+}
+
+completion_enabled=no
+completion_policy=''
+if completion_capabilities; then
+  # Hash the whole driver and shared logic conservatively, including configure,
+  # install, DLL and packaging policy. Runtime NCRS is deliberately absent.
+  if completion_policy="$(cat -- "$completion_script" "$completion_common" | sha256sum)"; then
+    [[ "$completion_policy" =~ ^[0-9a-f]{64}'  -'$ ]] && completion_enabled=yes
+  fi
+fi
+if [[ "$completion_enabled" == no ]]; then
+  echo 'Completion caching disabled: cannot verify GNU metadata/SHA-256 capabilities.' >&2
+fi
 
 function configure_component() {
   local signature log_copy record_tmp
@@ -337,6 +406,23 @@ echo -e "\nBuilding..."
 function build_target() {
   [[ $# -eq 2 ]] || return
   local -r TRG="$1"; local -r NJOBS="$2"; shift 2
+
+  local completion_record="$BUILD_DIRECTORY/.cross-complete-$TRG" expected completion_dir
+  if [[ "$completion_enabled" == yes && -f "$completion_record" && ! -L "$completion_record" && -r "$completion_record" ]]; then
+    if expected="$(completion_record_contents "$TRG")" &&
+       printf '%s\n' "$expected" | cmp -s -- "$completion_record" -; then
+      echo "Verified completed target $TRG; skipping."
+      return 0
+    fi
+  fi
+  # Invalidate before mkdir, configure, make, installation or packaging. Never
+  # write through a symlink and never continue if removal failed.
+  rm -f -- "$completion_record" || recovery_error "cannot invalidate completion record for $TRG"
+  [[ ! -e "$completion_record" && ! -L "$completion_record" ]] ||
+    recovery_error "completion record still exists for $TRG"
+  mkdir -p -- "$BUILD_DIRECTORY"/{cross,native}/"$TRG"/{binutils,gcc,mingw-w64}
+  mkdir -p -- "$BUILD_DIRECTORY/cross/$TRG/mingw-w64-headers"
+  mkdir -p -- "$INSTALL_DIRECTORY"/{cross,native}/"$TRG"
 
   # 1. Start with cross-binutils, the first component of the cross-compiler
   echo -e "\n Start with cross-binutils, the first component of the cross-compiler..."
@@ -444,6 +530,17 @@ function build_target() {
     recovery_error "packaging failed for $TRG; previous archive was preserved"
   mv -- "$package_dir/$TRG.zip" "$TRG.zip"
   rmdir -- "$package_dir"
+
+  if [[ "$completion_enabled" == yes ]]; then
+    # The disposable directory is on the record's filesystem for atomic rename.
+    completion_dir="$(mktemp -d "$BUILD_DIRECTORY/.cross-completion.XXXXXX")"
+    temporary_dirs+=("$completion_dir")
+    completion_record_contents "$TRG" > "$completion_dir/record" ||
+      recovery_error "cannot snapshot completed target $TRG"
+    mv -- "$completion_dir/record" "$completion_record" ||
+      recovery_error "cannot publish completion record for $TRG"
+    rmdir -- "$completion_dir"
+  fi
 }
 
 # Make everything

@@ -202,6 +202,9 @@ fi
     def test_compilation_installation_and_second_target_recovery(self):
         for stage, command in [("cross/i686-w64-mingw32/gcc", "-j 2 all-gcc"),
                                ("native/x86_64-w64-mingw32/gcc", "install")]:
+            target = stage.split("/")[1]
+            record = self.root / f"build/.cross-complete-{target}"
+            record.unlink(missing_ok=True)  # Exercise recovery, even after a complete run.
             self.run_build("12.2.0", FAIL_MAKE=stage + ":" + command, ok=False)
             artifact = self.root / "build/cross/i686-w64-mingw32/binutils/object.keep"
             artifact.write_text("preserve me")
@@ -212,10 +215,11 @@ fi
     def test_repeat_completion_jobs_and_packaging(self):
         self.run_build("12.2.0", FAIL_ZIP="yes", ok=False)
         self.run_build("12.2.0")
+        before = self.events()
         configurations = self.events().count("configure ")
         self.run_build("12.2.0", NCRS="3")
         self.assertEqual(configurations, self.events().count("configure "))
-        self.assertGreaterEqual(self.events().count("zip "), 5)
+        self.assertEqual(before, self.events(), "completed repeat must run no tools")
 
     def test_changed_inputs_preserve_artifacts(self):
         self.run_build("12.2.0")
@@ -543,6 +547,7 @@ exec {real_mv} "$@"
     def test_packaging_term_preserves_archive_and_cleans_staging(self):
         self.run_build("12.2.0")
         archive = self.root / "install/native/i686-w64-mingw32.zip"
+        (self.root / "install/native/i686-w64-mingw32/recovery-trigger").touch()
         self.write_exec(self.bin / "zip", '''#!/bin/bash
 echo partial > "$3"
 kill -TERM "$PPID"
@@ -558,6 +563,7 @@ exit 1
         self.assertFalse(archive.exists())
         self.run_build("12.2.0")
         self.assertEqual(archive.read_text(), "complete\n")
+        (self.root / "install/native/i686-w64-mingw32/recovery-trigger").touch()
         self.run_build("12.2.0", FAIL_ZIP="yes", ok=False)
         self.assertEqual(archive.read_text(), "complete\n")
         self.run_build("12.2.0")

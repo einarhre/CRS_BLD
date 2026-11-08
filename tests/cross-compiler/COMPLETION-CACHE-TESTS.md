@@ -1,5 +1,60 @@
 # Completion-cache regression tests
 
+## Implemented contract and review notes
+
+The production implementation now uses `build/.cross-complete-<target>` and
+schema 1, described in R4 of `docs/cross-compiler-resume-spec.md`. It hashes
+metadata from GNU find/sort/xargs/stat with SHA-256. Its policy identity hashes
+the complete driver followed by `common.sh`; this deliberately permits harmless
+comment edits to cause misses. Unsupported GNU metadata/digest capabilities
+disable caching. A failed post-build scan stops without publishing a record.
+The design decisions listed at the end of this document are historical planning
+questions; the specification now records the selected behavior.
+
+The original pre-implementation inventory and prototype results below are retained
+as test provenance. Changes to the older tests preserve their recovery purposes:
+
+- Packaging failure and termination tests change an isolated installation tree
+  before injecting failure, ensuring the packaging path actually runs.
+- The compilation/install failure loop removes the relevant target record before
+  each injected failure. Completed-repeat/job-count assertions now require zero
+  additional tool calls rather than counting duplicate `zip ` substrings.
+- Strict DLL relocation/replay tests deliberately change the first target's tree.
+  The stable-packaging test removes only its completion record, so it still
+  verifies identical packages from identical artifacts. The third-invocation test
+  deliberately changes the target on each retry to retain replay coverage.
+- Tests that plant build sentinels certify those added artifacts before taking
+  whole-tree snapshots around a completed repeat. The job-count test also checks
+  that a real recovery uses the new job count before checking the idle repeat.
+- Configure-argument rejection snapshots omit only the two exact top-level
+  completion-record paths and their checksum lines: invalidation is required
+  before entering target recovery. All other file/path preservation assertions
+  remain. Global source/environment incompatibility assertions remain unchanged.
+
+Additional Python regressions cover failed invalidation (including a removal
+tool falsely reporting success), late post-build scan failure, and appended NUL
+bytes in records. The NUL regression first failed against an intermediate Bash
+string comparison; byte-for-byte `cmp` now rejects it. Field-level tests in
+`tests/test_completion_metadata.py` verify every stat field against `lstat`,
+nanosecond times, symlink destinations, directory metadata, special permissions,
+unusual names, deterministic output, late pipeline/digest errors, non-GNU tools
+and unsupported quoting styles.
+
+Final implementation verification on Linux (isolated fixtures only):
+
+| Command | Result |
+|---|---|
+| `tests/run-cross-compiler-tests.sh` | 345 passed, 0 failed, 0 advisory failures, 10 skipped |
+| `python3 -m unittest discover -s tests -p 'test_*.py'` | 82 run, 81 passed, 1 skipped, no failures |
+| `bash -n` on all 65 repository shell files | Passed |
+| `git diff --check` | Passed |
+
+Shell skips are the ten scan-tool shims the implementation does not use; failures
+in find, sort, xargs, stat and sha256sum are exercised. The Python skip requires
+root to change numeric ownership. The unchanged-repeat object-rewriting
+demonstration is no longer reproduced, as intended. The Python suite includes
+simulated macOS/Homebrew setup; no native macOS host was available for validation.
+
 Tests for the planned "verified per-target completion cache" in
 `make_cross-compiler.sh`.  They are test-only: no production file was changed, and
 they are expected to **fail against the current implementation** (master

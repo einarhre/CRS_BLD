@@ -762,7 +762,11 @@ assert_safe_input_change() { # build-snapshot-before id-regex "rels..."
     assert_output_matches 'compat|chang|differ|mismatch|stale|reus|inconsist|incomplete' \
       "rejection must explain itself"
     snapshot_dir "$PREF/build" "$SB/build.after"
-    assert_same_snapshot "$1" "$SB/build.after" \
+    # Completion invalidation precedes configure's compatibility rejection.
+    # Keep every source/build artifact assertion; omit only disposable records.
+    sed -E '/^(\.\/|[0-9]+ [0-9]+ \.\/)\.cross-complete-(i686|x86_64)-w64-mingw32$/d' "$1" > "$SB/compatible.before"
+    sed -E '/^(\.\/|[0-9]+ [0-9]+ \.\/)\.cross-complete-(i686|x86_64)-w64-mingw32$/d' "$SB/build.after" > "$SB/compatible.after"
+    assert_same_snapshot "$SB/compatible.before" "$SB/compatible.after" \
       "rejected reuse must not delete or modify build artifacts"
     return 0
   fi
