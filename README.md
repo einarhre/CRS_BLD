@@ -182,25 +182,11 @@ The symbolic links are created by `make_cross-compiler.sh`:
 
 They point to the currently selected extracted source directories.
 
-Source preparation is tracked separately from build completion. The script checks
-selected source and build-input identities before reusing existing state. It does
-not rely on the `src/cpl/gcc` symbolic link alone as evidence of successful
-preparation. Interrupted preparation is detected and retried as needed.
+Source preparation is tracked separately from build completion. The script checks selected source and build-input identities before reusing existing state. It does not rely on the `src/cpl/gcc` symbolic link alone as evidence of successful preparation. Interrupted preparation is detected and retried as needed.
 
-**Do not manually delete `src/cpl/`, `build/`, or `install/` to force a fresh
-build.** These directories can contain substantial, reusable work. When sources
-or build inputs are incompatible with existing artifacts, the script is designed
-to reject unsafe reuse rather than silently reuse or automatically discard
-valuable build trees.
+**Do not manually delete `src/cpl/`, `build/`, or `install/` to force a fresh build.** These directories can contain substantial, reusable work. When sources or build inputs are incompatible with existing artifacts, the script is designed to reject unsafe reuse rather than silently reuse or automatically discard valuable build trees.
 
-The special GCC selection `git` uses `src/cpl/gcc-git`. If no build or
-installation artifacts are present, the script obtains fresh upstream GCC
-sources with a shallow `git clone --depth 1` in a staging directory, then
-publishes that checkout as `src/cpl/gcc-git`. An existing checkout may be moved
-aside and is not guaranteed to be retained after successful preparation.
-If artifacts are already present, the script does not fetch or clone GCC:
-it validates the existing checkout and its recorded source identity before
-continuing. The script does not use `git pull` to update an existing checkout.
+The special GCC selection `git` uses `src/cpl/gcc-git`. If no build or installation artifacts are present, the script obtains fresh upstream GCC sources with a shallow `git clone --depth 1` in a staging directory, then publishes that checkout as `src/cpl/gcc-git`. An existing checkout may be moved aside and is not guaranteed to be retained after successful preparation.  If artifacts are already present, the script does not fetch or clone GCC: it validates the existing checkout and its recorded source identity before continuing. The script does not use `git pull` to update an existing checkout.
 
 ## Building the cross and native compilers
 
@@ -268,18 +254,9 @@ install/native/
 
 ## Build recovery and completion cache
 
-The compiler driver supports restarting an interrupted build with the same GCC
-selection and compatible build inputs. It revisits incomplete stages using the
-existing build tools and preserves compatible artifacts instead of starting
-from scratch.
+The compiler driver supports restarting an interrupted build with the same GCC selection and compatible build inputs. It revisits incomplete stages using the existing build tools and preserves compatible artifacts instead of starting from scratch.
 
-After a target has been built, installed, its runtime DLLs relocated, and its
-native ZIP package published, the driver can publish a verified per-target
-completion record under `build/.cross-complete-<target>`. On subsequent runs,
-when the source/configuration identities, record, and metadata of the build and
-install trees and ZIP all match, it skips that target's build, installation,
-and packaging stages entirely. The two target architectures are checked
-independently.
+After a target has been built, installed, its runtime DLLs relocated, and its native ZIP package published, the driver can publish a verified per-target completion record under `build/.cross-complete-<target>`. On subsequent runs, when the source/configuration identities, record, and metadata of the build and install trees and ZIP all match, it skips that target's build, installation, and packaging stages entirely. The two target architectures are checked independently.
 
 For example, an unchanged repeat may report:
 
@@ -288,40 +265,21 @@ Verified completed target i686-w64-mingw32; skipping.
 Verified completed target x86_64-w64-mingw32; skipping.
 ```
 
-A missing, rejected, or stale record causes normal recovery rather than an
-unverified skip. A cache miss does not necessarily rebuild the toolchain from
-scratch: compatible intermediate artifacts may be reused, although some stages
-can still perform substantial work. The first run after introducing the
-completion-cache feature has no existing completion records and can therefore
-be expensive. Changing only `NCRS` (parallel job count) does not invalidate a
-compatible completed target.
+A missing, rejected, or stale record causes normal recovery rather than an unverified skip. A cache miss does not necessarily rebuild the toolchain from scratch: compatible intermediate artifacts may be reused, although some stages can still perform substantial work. The first run after introducing the completion-cache feature has no existing completion records and can therefore be expensive. Changing only `NCRS` (parallel job count) does not invalidate a compatible completed target.
 
-The cache compares filesystem metadata, **not the contents of every artifact**.
-It is not a full content-integrity check and does not guarantee that every
-internal `make` dependency is fresh. It assumes one writer per build prefix;
-do not modify or concurrently build into the same `PREF` while a run is active.
-The cache requires suitable GNU utilities; without them the driver falls back
-to its existing recovery behavior.
+The cache compares filesystem metadata, **not the contents of every artifact**.  It is not a full content-integrity check and does not guarantee that every internal `make` dependency is fresh. It assumes one writer per build prefix; do not modify or concurrently build into the same `PREF` while a run is active.  The cache requires suitable GNU utilities; without them the driver falls back to its existing recovery behavior.
 
-For the record format, compatibility guarantees, failure behavior, portability,
-and known limitations, see
-[`docs/cross-compiler-resume-spec.md`](docs/cross-compiler-resume-spec.md).
+For the record format, compatibility guarantees, failure behavior, portability, and known limitations, see [`docs/cross-compiler-resume-spec.md`](docs/cross-compiler-resume-spec.md).
 
 ### Isolated integration testing
 
-Use a separately designated `PREF` for real integration testing, not the
-prefix holding a valuable production toolchain. `PREF` is the root of the
-local source, build, and installation directories used by the driver.
-For example:
+Use a separately designated `PREF` for real integration testing, not the prefix holding a valuable production toolchain. `PREF` is the root of the local source, build, and installation directories used by the driver.  For example:
 
 ```bash
 PREF="$HOME/src/CRS_BLD-validation" NCRS=4 ./make_cross-compiler.sh 16.1.0
 ```
 
-Set up and inspect the selected prefix before running this command: an absent
-or incompatible build may perform a full toolchain build. Never remove
-completion records merely to test the cache, because doing so can trigger an
-expensive recovery replay.
+Set up and inspect the selected prefix before running this command: an absent or incompatible build may perform a full toolchain build. Never remove completion records merely to test the cache, because doing so can trigger an expensive recovery replay.
 
 ## Checking the generated compilers
 
@@ -340,11 +298,7 @@ The diagnostic helper can also be used:
 
 ## Compiler targets
 
-The supported MinGW-w64 targets are `i686-w64-mingw32` and
-`x86_64-w64-mingw32`. Host cross-compilers are installed under
-`install/cross/<target>/`; native Windows toolchains and ZIP packages are
-installed under `install/native/<target>/` and
-`install/native/<target>.zip`, respectively.
+The supported MinGW-w64 targets are `i686-w64-mingw32` and `x86_64-w64-mingw32`. Host cross-compilers are installed under `install/cross/<target>/`; native Windows toolchains and ZIP packages are installed under `install/native/<target>/` and `install/native/<target>.zip`, respectively.
 
 ## Package outputs
 
@@ -395,11 +349,11 @@ For reproducibility, keep the build scripts, package configuration files, patche
 
 ## Development guidance
 
-Contributors and coding assistants should read [`AGENTS.md`](AGENTS.md). The
-repository-specific Claude guidance is in [`CLAUDE.md`](CLAUDE.md). Automated
-regression tests are available via `tests/run-cross-compiler-tests.sh` and
-`python3 -m unittest discover -s tests -p 'test_*.py'`; these do not perform
-a real GCC toolchain build.
+Contributors and coding assistants should read [`AGENTS.md`](AGENTS.md). The repository-specific Claude guidance is in [`CLAUDE.md`](CLAUDE.md). Automated regression tests are available via
+`tests/run-cross-compiler-tests.sh`
+and
+`python3 -m unittest discover -s tests -p 'test_*.py'`;
+these do not perform a real GCC toolchain build.
 
 ## Warranty disclaimer
 
