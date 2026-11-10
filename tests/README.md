@@ -7,8 +7,11 @@ tests/run-tests.sh
 ```
 
 The Bash entry point runs the existing cross-compiler shell suite, the existing
-Python unittest suite, and focused Bash checks of the aggregate runner. All three
-are attempted even when an earlier suite fails. The overall status is zero only
+Python unittest suite, and focused Bash checks of the aggregate runner. Once the
+shared Bash prerequisite is accepted, all three are attempted in that order even
+when an earlier suite fails. If Bash is missing or too old, all three dependent
+phases are explicitly reported as `not run`, without numeric exit statuses;
+the Python fixtures also require that Bash. The overall status is zero only
 when all three succeed. Missing mandatory runners or interpreters, failed
 discovery and empty suites are errors, not skips. Shell discovery must include
 at least one hard (`t_*`) test. The dispatcher takes no filtering arguments.
@@ -16,7 +19,7 @@ at least one hard (`t_*`) test. The dispatcher takes no filtering arguments.
 Each suite prints its own results. The shell runner prints pass, failure,
 advisory-failure, skip and demonstration information; Python runs with verbosity
 2 to show skipped test IDs and reasons. The final dispatcher summary reports
-suite exit statuses, without inferring test counts from those statuses. A suite
+observed phase exit statuses or `not run`, without inferring test counts. A suite
 that fails before producing a count has no reliable count to report. Existing
 shell advisory failures and demonstrations remain non-gating, as before.
 
@@ -39,7 +42,9 @@ python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 The Python phase uses the same unittest discovery through its standard-library
-API so it can reject zero discovered tests before running them. It does not
+API with the CLI's default warning filter, so it can reject zero discovered tests
+before running them. Its stdin is the consumed discovery heredoc; current tests
+do not read stdin. It does not
 replace any test or fixture. The aggregate runner's lightweight checks can run
 separately without running the compiler regression suites:
 
@@ -49,8 +54,12 @@ bash tests/runner/test_run_tests.sh
 
 Those checks copy the dispatcher to temporary directories, install fake suite
 runners and tiny unittest fixtures, and test continuation, statuses, skip output,
-missing interpreters/runners, discovery errors and absent/empty suites. Their
-fake self-check runner prevents recursive aggregate execution.
+missing interpreters/runners, the Bash version gate, discovery errors and
+absent/empty suites. The fake shell runner rejects unexpected arguments so a
+filtered aggregate invocation cannot pass. The bytecode check clears inherited
+`PYTHONDONTWRITEBYTECODE` and `PYTHONPYCACHEPREFIX` rather than masking a missing
+`-B`. Their fake self-check runner records execution without recursive aggregate
+execution. Standalone checks require Python and diagnose its absence explicitly.
 
 Syntax checks remain a separate validation step, for example:
 
@@ -80,6 +89,8 @@ require zip/unzip. Permission checks depend on root versus non-root execution.
 Missing optional fixture capabilities retain the existing suites' skip policy;
 the aggregate runner does not turn those skips into passes or require them to
 run. Missing mandatory Bash/Python interpreters always fail the invocation.
+An entirely skipped but nonempty suite retains its existing successful status;
+there is no new all-skipped failure threshold (review finding L4, deferred).
 
 ## Baseline and limits
 
@@ -107,3 +118,9 @@ are unchanged. For the completion-cache contract and limits, see
 [the recovery specification](../docs/cross-compiler-resume-spec.md); historical
 test provenance remains in
 [COMPLETION-CACHE-TESTS.md](cross-compiler/COMPLETION-CACHE-TESTS.md).
+
+Signal forwarding (review finding L2) is deferred. SIGINT delivered to the process
+group interrupts the run without a final summary. SIGTERM sent only to the
+dispatcher's PID is not forwarded and can leave its current child running;
+supervisors should terminate the process group. Continuation after an ordinary
+suite failure does not promise continuation or a summary after a signal.

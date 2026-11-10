@@ -45,7 +45,7 @@ import unittest
 suite = unittest.defaultTestLoader.discover(sys.argv[1], pattern="test_*.py")
 if suite.countTestCases() == 0:
     sys.exit("ERROR: mandatory Python suite is absent or empty (no tests discovered)")
-result = unittest.TextTestRunner(verbosity=2).run(suite)
+result = unittest.TextTestRunner(verbosity=2, warnings="default").run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)
 PY
 }
@@ -60,28 +60,52 @@ run_runner_checks() {
 }
 
 bash_bin="$(command -v bash)" || bash_bin=''
-shell_rc=1
-checks_rc=1
-echo '=== Shell suite ==='
+bash_ready=no
 if [[ -z "$bash_bin" ]] || ! "$bash_bin" -c \
   '(( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4 ))'; then
   echo 'ERROR: mandatory interpreter bash >= 4.4 is required on PATH' >&2
 else
+  bash_ready=yes
+fi
+
+# All three phases depend on PATH's Bash, including the Python fixtures.
+# Distinguish a rejected shared prerequisite from an observed phase exit code.
+shell_rc=not-run
+python_rc=not-run
+checks_rc=not-run
+echo '=== Shell suite ==='
+if [[ "$bash_ready" == yes ]]; then
   run_shell_suite
   shell_rc=$?
+else
+  echo 'NOT RUN: shell suite requires Bash >= 4.4' >&2
 fi
 
 echo '=== Python suite ==='
-run_python_suite
-python_rc=$?
-
-echo '=== Aggregate runner checks ==='
-if [[ -n "$bash_bin" ]]; then
-  run_runner_checks
-  checks_rc=$?
+if [[ "$bash_ready" == yes ]]; then
+  run_python_suite
+  python_rc=$?
+else
+  echo 'NOT RUN: Python suite requires Bash >= 4.4' >&2
 fi
 
+echo '=== Aggregate runner checks ==='
+if [[ "$bash_ready" == yes ]]; then
+  run_runner_checks
+  checks_rc=$?
+else
+  echo 'NOT RUN: runner checks require Bash >= 4.4' >&2
+fi
+
+report_phase() {
+  if [[ "$2" == not-run ]]; then
+    printf '%s: not run (Bash prerequisite unavailable)\n' "$1"
+  else
+    printf '%s: exit %s\n' "$1" "$2"
+  fi
+}
 echo '=== Suite exit statuses (counts and skips are reported above) ==='
-printf 'Shell suite: exit %s\nPython suite: exit %s\nRunner checks: exit %s\n' \
-  "$shell_rc" "$python_rc" "$checks_rc"
-[[ "$shell_rc" -eq 0 && "$python_rc" -eq 0 && "$checks_rc" -eq 0 ]]
+report_phase 'Shell suite' "$shell_rc"
+report_phase 'Python suite' "$python_rc"
+report_phase 'Runner checks' "$checks_rc"
+[[ "$shell_rc" == 0 && "$python_rc" == 0 && "$checks_rc" == 0 ]]
