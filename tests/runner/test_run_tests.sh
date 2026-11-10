@@ -39,7 +39,7 @@ SH
   cat > "$work/infrastructure/run-infrastructure-tests.sh" <<'SH'
 if [[ $# == 1 && $1 == -l ]]; then
   [[ ${INFRA_DISCOVERY_RC:-0} == 0 ]] || exit "$INFRA_DISCOVERY_RC"
-  printf '%s\n' "${INFRA_NAMES-$'t_common_x\nt_diag_x\nt_harness_x\nt_pkgs_x'}"
+  printf '%s\n' "${INFRA_NAMES-$'t_common_x\nt_diag_x\nt_harness_x\nt_pkgs_x\nt_pkgs_support_x'}"
   exit 0
 fi
 [[ $# == 0 ]] || { echo "unexpected infrastructure runner arguments: $*" >&2; exit 3; }
@@ -282,6 +282,11 @@ fixture infra_component_missing
 run INFRA_NAMES=$'t_common_x\nt_pkgs_x\nk_diag_demo'
 bad; infra_events ''; contains 'no t_diag_* tests discovered'
 pass infrastructure_component_without_hard_tests_rejected
+
+fixture infra_support_missing
+run INFRA_NAMES=$'t_common_x\nt_diag_x\nt_harness_x\nt_pkgs_x'
+bad; infra_events ''; contains 'no t_pkgs_support_* tests discovered'
+pass missing_package_support_component_rejected
 
 fixture infra_discovery_failure
 run INFRA_DISCOVERY_RC=4

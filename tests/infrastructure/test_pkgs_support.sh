@@ -173,8 +173,8 @@ t_pkgs_support_lock_run_success_passes_arguments_and_releases() {
 
 t_pkgs_support_lock_run_failure_status_released_when_errexit_suppressed() {
   sandbox_new
-  # In an `||` context set -e is inactive, so the failure status is returned
-  # and the lock IS released.  Contrast with k_pkgs_support_lock_run_leaks_*.
+  # In an `||` context set -e is inactive; explicit failure status must still
+  # be returned and the acquired lock released.
   run_pkgs_support -- 'lock_run "$1" false || echo status=$?; test ! -e "$1" && echo free' "$SB/L"
   assert_contains "$OUT" 'status=1'; assert_contains "$OUT" free
 }

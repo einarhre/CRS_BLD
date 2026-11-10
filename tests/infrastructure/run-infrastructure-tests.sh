@@ -9,7 +9,7 @@
 #   -v        show output of passing tests too
 #
 # Discovery: without file arguments every tests/infrastructure/test_*.sh file
-# is loaded (automatic discovery), and the four mandatory files test_common.sh,
+# is loaded (automatic discovery), and the five mandatory files test_pkgs_support.sh, test_common.sh,
 # test_diagnostics.sh, test_make_pkgs.sh and test_harness.sh must be among
 # them.  With file arguments only those files are loaded.  Every loaded file
 # must pass `bash -n`, source with status 0 and no stderr output within the

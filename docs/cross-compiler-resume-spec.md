@@ -15,7 +15,11 @@ The intended behavior preserves compatible work, revisits incomplete work, and a
 - Match available GCC versions exactly, not by substring.
 - Reject missing, ambiguous, or unsupported versions before destructive operations.
 - Provide useful error messages.
-- Validate `NCRS` as a positive integer.
+- Validate explicit `NCRS` before Homebrew/pkg-config setup: ASCII decimal,
+  canonicalized by removing leading zeros, range 1..4096. Explicit empty input
+  is invalid. When unset, validate successful `nproc --all` output after platform
+  PATH setup; clamp a valid default above 4096 with a diagnostic. Validation
+  failure must precede filesystem mutation. NCRS remains readonly.
 
 ### R2. Source preparation
 

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep this gate parseable by macOS Bash 3.2; reject before source/setup.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 5 ] ||
+   { [ "${BASH_VERSINFO[0]}" -eq 5 ] && [ "${BASH_VERSINFO[1]}" -lt 1 ]; }
+then
+  echo 'make_pkgs.sh requires Bash >= 5.1 (wait -n -p).' >&2
+  exit 1
+fi
+
 # Optional behaviour
 declare -r DELETE_PKG_SRC=1 # Delete source directory after compilation (no=0, yes=1)
 declare -r DELETE_PKG_BLD=1 # Delete build directory after compilation (no=0, yes=1)

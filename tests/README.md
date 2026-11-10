@@ -13,8 +13,8 @@ shared Bash prerequisite is accepted, all four are attempted in that order even
 when an earlier suite fails. If Bash is missing or too old, all four dependent
 phases are explicitly reported as `not run`, without numeric exit statuses;
 the Python fixtures also require that Bash. The overall status is zero only
-when all four succeed. The infrastructure runner and each of its four
-components (`t_common_*`, `t_diag_*`, `t_harness_*`, `t_pkgs_*`) must exist and
+when all four succeed. The infrastructure runner and each of its five
+components (`t_common_*`, `t_diag_*`, `t_harness_*`, `t_pkgs_*`, `t_pkgs_support_*`) must exist and
 contribute at least one hard test, otherwise the phase fails. Missing mandatory runners or interpreters, failed
 discovery and empty suites are errors, not skips. Shell discovery must include
 at least one hard (`t_*`) test. The dispatcher takes no filtering arguments.
@@ -76,7 +76,7 @@ git diff --check
 ## Infrastructure characterization tests
 
 `tests/infrastructure/` characterizes the *current* behavior of `etc/common.sh`
-(`test_common.sh`), `etc/diagnostics.sh` (`test_diagnostics.sh`) and
+(`test_common.sh`), package-only helpers (`test_pkgs_support.sh`), `etc/diagnostics.sh` (`test_diagnostics.sh`) and
 `make_pkgs.sh` (`test_make_pkgs.sh`); `test_harness.sh` tests the runner and
 `lib.sh` themselves. The characterization tests assert what the scripts do
 today, including quirks, not what a corrected version should do; a deliberate
@@ -90,7 +90,7 @@ tests/infrastructure/run-infrastructure-tests.sh tests/infrastructure/test_commo
 ```
 
 Discovery is automatic: without file arguments every `test_*.sh` in the
-directory is loaded, and the four files named above are mandatory. With file
+directory is loaded, and the five files named above are mandatory. With file
 arguments only those files are loaded. A file fails discovery (and the run) if
 it is missing or empty, fails `bash -n`, returns nonzero or writes any byte to
 stdout or stderr (even a lone newline) while being sourced, if listing or
@@ -99,14 +99,30 @@ sourcing, listing and sorting run in one supervised process) exceeds
 `INFRA_DISCOVERY_TIMEOUT` (default 30 s), if it defines no `t_*` test, or if
 it redefines another file's test.
 
-Outcomes: `t_*` tests gate (`PASS`, `FAIL`, or `SKIP` on exit 77). `k_*` tests
-demonstrate known defects (lock leak when a wrapped command fails under
-`set -e`, endless wait on an uncreatable lock path, a leaked per-configuration
-temp file after `make_pkgs.sh` worker failures): `KNOWN-DEFECT-REPRODUCED`
-(exit 0), `-NOT-REPRODUCED` (exit 1) and `-SKIPPED` (exit 77, prerequisite
-unavailable) are non-gating; `-ERROR` (timeout, signal, harness/load error or
-any other status) gates. The package tests skip on Bash older than 5.1
-(`wait -n -p`).
+Outcomes: `t_*` tests gate (`PASS`, `FAIL`, or `SKIP` on exit 77). The remaining
+`k_pkgs_support_lock_acquire_spins_forever_when_parent_missing` demonstrates the
+known uncreatable-lock-path wait, deferred to R3 Phase 2. Lock-run failure cleanup
+and per-configuration-list leakage now have mandatory `t_*` regressions.
+`KNOWN-DEFECT-REPRODUCED` (exit 0), `-NOT-REPRODUCED` (exit 1) and `-SKIPPED`
+(exit 77) are non-gating; `-ERROR` (timeout, signal, load or other failure) gates.
+Package-driver tests skip on Bash older than 5.1. An optional real-old-Bash test
+uses `CRS_OLD_BASH` (or an available named old binary), otherwise explicitly skips;
+static gate-order coverage is reported separately.
+
+Moved helper tests are named `t_pkgs_support_*` and source common once followed by
+support. Mandatory discovery includes `test_pkgs_support.sh`; spawned-worker
+and unusual-TMPDIR harness selections use the migrated exact names. Ownership
+tests enforce definitions-only support and absence from compiler/diagnostics.
+The compiler shell suite tests a support-file edit remaining a true no-work hit;
+Python's compiler fixtures still work without that file.
+
+`test_lock_signals.py` uses only synthetic paths, bounded process groups and an
+allowlist of ordinary utilities. It explicitly establishes default SIGINT for
+foreground tests and startup-ignored SIGINT for the async-worker case. TERM/HUP
+to the holder must retain the lock until the protected foreground child finishes.
+ICU tests invoke only its custom function with fabricated configure/make spies;
+recipe hooks and real compilers are never executed. NCRS tests cover ASCII,
+canonicalization, bounds, huge values, defaults/failure and pre-mutation rejection.
 
 Supervision and cleanup: each test and each discovery step runs in a fresh
 `bash --noprofile --norc` with nounset, in its own process group, under a
@@ -199,7 +215,7 @@ source, build and install trees; never use a production prefix as a test fixture
 Native macOS operation and real compiler correctness are not established by
 these suites. The Python macOS test is a Linux simulation. `etc/common.sh`,
 `etc/diagnostics.sh` and `make_pkgs.sh` have direct characterization tests
-(above), not real-build coverage; package recipes under `src/pkg/cfg` are not tested. The aggregate runner rejects an entirely empty
+(above), not real-build coverage; general package recipes under `src/pkg/cfg` remain untested; ICU host-tools lock behavior has a synthetic spy fixture. The aggregate runner rejects an entirely empty
 suite, but does not enforce a complete baseline manifest or detect every partial
 discovery loss. Existing timeout, environment-isolation and advisory policies
 are unchanged. For the completion-cache contract and limits, see

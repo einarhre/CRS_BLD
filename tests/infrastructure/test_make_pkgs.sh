@@ -836,3 +836,30 @@ t_pkgs_mktemp_failure_is_detected_at_each_allocation() {
     assert_absent "$PREF_DIR/build" 'no worker directories created'
   done
 }
+
+t_pkgs_bash_gate_precedes_sources_and_associative_declarations() {
+  pkgs_sandbox
+  local gate source_line array_line
+  gate="$(grep -n 'BASH_VERSINFO\[0\].*-lt 5' "$PKGS_SH" | head -1 | cut -d: -f1)"
+  source_line="$(grep -n '^source ' "$PKGS_SH" | head -1 | cut -d: -f1)"
+  array_line="$(grep -n 'declare -[a-z]*A ' "$PKGS_SH" | head -1 | cut -d: -f1)"
+  [[ -n "$gate" && "$gate" -lt "$source_line" && "$gate" -lt "$array_line" ]] || fail 'Bash gate must precede setup'
+}
+
+t_pkgs_real_old_bash_rejected_before_setup_when_available() {
+  pkgs_sandbox
+  local candidate="${CRS_OLD_BASH:-}" name
+  if [[ -z "$candidate" ]]; then
+    for name in bash3.2 bash4.4 bash5.0; do candidate="$(command -v "$name" || true)"; [[ -z "$candidate" ]] || break; done
+  fi
+  [[ -n "$candidate" ]] || skip 'no real Bash < 5.1 available (set CRS_OLD_BASH)'
+  run_ctl -- "$candidate" --noprofile --norc -c 'test "${BASH_VERSINFO[0]}" -lt 5 || { test "${BASH_VERSINFO[0]}" -eq 5 && test "${BASH_VERSINFO[1]}" -lt 1; }'
+  assert_rc 0 "$RC" 'CRS_OLD_BASH must actually be older than 5.1'
+  run_ctl -s MOCK_UNAME=Darwin -- "$candidate" --noprofile --norc "$PKGS_SH" alpha
+  assert_rc 1 "$RC" 'old Bash rejected'
+  assert_eq '' "$OUT" 'no stdout'
+  assert_contains "$ERR" 'requires Bash >= 5.1'
+  assert_not_contains "$ERR" Homebrew 'before common'
+  assert_eq '' "$(ls -A "$SB/tmp")" 'before temporary allocation'
+  assert_absent "$PREF_DIR/build"
+}

@@ -70,7 +70,7 @@ run_infrastructure_suite() {
     return 1
   }
   # Each mandatory component must contribute at least one hard test.
-  for prefix in t_common_ t_diag_ t_harness_ t_pkgs_; do
+  for prefix in t_common_ t_diag_ t_harness_ t_pkgs_ t_pkgs_support_; do
     [[ $'\n'"$names" == *$'\n'"$prefix"* ]] || {
       echo "ERROR: mandatory infrastructure suite is empty (no $prefix* tests discovered)" >&2
       return 1

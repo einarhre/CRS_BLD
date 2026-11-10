@@ -89,7 +89,26 @@ The `src/pkg/tar/` directory contains downloaded package source archives.
 
 ## Host requirements
 
-The build scripts require GNU command-line tools and Bash 4 or newer. The Bash version included with macOS is too old.
+The compiler driver and regression tests require Bash 4.4 or newer and GNU command-line tools. The package driver requires Bash 5.1 or newer (`wait -n -p`) and rejects older Bash before setup. The Bash version included with macOS is too old.
+
+`NCRS` accepts ASCII decimal integers from 1 through 4096. Leading zeros are
+removed (`007` becomes `7`, `08` becomes `8`). Explicitly empty, malformed or
+out-of-range values are rejected before host-tool setup or filesystem changes.
+When unset, `nproc --all` supplies the default; failure or invalid output is an
+error, while a valid default above 4096 is clamped with a diagnostic note.
+
+Shared infrastructure ownership and the lock/callback contract are documented in
+[shared infrastructure](docs/shared-infrastructure.md). The undocumented
+one-argument `check_pc_vs_files` sourced API has been removed from `common.sh`;
+use the diagnostics executable. Package lock/trash helpers now require sourcing
+`etc/pkgs-support.sh` after `etc/common.sh`.
+
+R3 changes the compiler/common script bytes, so existing completion records cause
+conservative recovery and can replay installation and ZIP publication. Deliver
+the full refactor before the next compiler invocation; running intermediate
+common-file revisions can cause additional expensive replays. The full-file
+policy hash and record validation remain unchanged. Later package-support-only
+edits do not invalidate compiler completions.
 
 ### Linux
 
