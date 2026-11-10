@@ -1089,3 +1089,16 @@ t_cc_invalidation_preserves_all_build_artifacts() {
   snapshot_dir "$PREF/src" "$SB/src.after"
   assert_same_snapshot "$SB/src.before" "$SB/src.after" "sources changed by a recovery"
 }
+
+# Package-only definitions do not participate in compiler execution or policy.
+t_cc_package_support_edit_keeps_cache() {
+  new_sandbox; default_sources
+  mkdir -p "$SB/variant"
+  cp "$CRS_ROOT/make_cross-compiler.sh" "$SB/variant/"
+  cp -R "$CRS_ROOT/etc" "$SB/variant/etc"
+  SCRIPT_UNDER_TEST="$SB/variant/make_cross-compiler.sh"
+  build_ok 13.2.0
+  cc_expect_hit
+  printf '\nexit 99 # must never be sourced by the compiler\n' >> "$SB/variant/etc/pkgs-support.sh"
+  cc_expect_hit
+}

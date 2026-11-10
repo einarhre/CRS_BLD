@@ -61,7 +61,7 @@ done
 errors=0
 err() { echo "ERROR: $*" >&2; errors=$((errors + 1)); }
 
-mandatory=(test_common.sh test_diagnostics.sh test_harness.sh test_make_pkgs.sh)
+mandatory=(test_pkgs_support.sh test_common.sh test_diagnostics.sh test_harness.sh test_make_pkgs.sh)
 if [[ "$explicit" -eq 0 ]]; then
   for m in "${mandatory[@]}"; do
     [[ -e "$here/$m" ]] || err "mandatory test file missing: $here/$m"

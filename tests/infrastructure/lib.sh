@@ -35,7 +35,8 @@ unset PREF NCRS PKG_CONFIG_PATH PKG_CONFIG_LIBDIR MOCK_FAIL_CC MOCK_FAIL_TOOL
 COMMON_SH="$CRS_ROOT/etc/common.sh"
 DIAG_SH="$CRS_ROOT/etc/diagnostics.sh"
 PKGS_SH="$CRS_ROOT/make_pkgs.sh"
-export COMMON_SH DIAG_SH PKGS_SH
+PKGS_SUPPORT_SH="$CRS_ROOT/etc/pkgs-support.sh"
+export COMMON_SH DIAG_SH PKGS_SH PKGS_SUPPORT_SH
 
 TRG32=i686-w64-mingw32
 TRG64=x86_64-w64-mingw32
@@ -46,7 +47,7 @@ TIMEOUT_BIN="$(command -v timeout || true)"
 
 # Ordinary utilities admitted into the controlled PATH.  Nothing that can
 # compile, link, assemble, download or install software belongs here.
-CTL_ALLOW=(bash sh dirname basename cat cp mv rm rmdir mkdir ln chmod touch date
+CTL_ALLOW=(cmp bash sh dirname basename cat cp mv rm rmdir mkdir ln chmod touch date
   sleep sort find sed grep head tail tr wc od env mktemp realpath nproc tar gzip)
 CTL_ALLOW_OPTIONAL=(xz)
 # Names that resolve to a logging, failing spy instead of falling through.
@@ -233,7 +234,7 @@ _ctl_launch() {
   local -A envmap=(
     [PATH]="$CTL_BIN" [HOME]="$SB/home" [TMPDIR]="$SB/tmp" [LC_ALL]=C [SB]="$SB"
     [PREF]="$SB/pref" [COMMON_SH]="$COMMON_SH" [DIAG_SH]="$DIAG_SH" [PKGS_SH]="$PKGS_SH"
-    [BASH_BIN]="$BASH_BIN" [FORBIDDEN_LOG]="$FORBIDDEN_LOG"
+    [PKGS_SUPPORT_SH]="$PKGS_SUPPORT_SH" [BASH_BIN]="$BASH_BIN" [FORBIDDEN_LOG]="$FORBIDDEN_LOG"
   )
   while [[ $# -gt 0 && "$1" != -- ]]; do
     kv="$1"; shift
@@ -308,6 +309,15 @@ run_common() {
   shift
   local script="$1"; shift
   run_ctl "${opts[@]}" -- "$BASH_BIN" --noprofile --norc -c 'source "$COMMON_SH"; '"$script" _ "$@"
+}
+
+# Source initialization once, then the package-only definitions.
+run_pkgs_support() {
+  local -a opts=()
+  while [[ $# -gt 0 && "$1" != -- ]]; do opts+=("$1"); shift; done
+  shift
+  local script="$1"; shift
+  run_ctl "${opts[@]}" -- "$BASH_BIN" --noprofile --norc -c 'source "$COMMON_SH"; source "$PKGS_SUPPORT_SH"; '"$script" _ "$@"
 }
 
 assert_eq() {  # assert_eq expected actual message

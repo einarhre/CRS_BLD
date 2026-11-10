@@ -16,7 +16,7 @@ suite_new() {
   mkdir -p "$SUITE" "$PIDDIR" "$SB/stmp"
   cp -- "$INFRA_HERE/run-infrastructure-tests.sh" "$INFRA_HERE/lib.sh" "$SUITE/"
   local f
-  for f in common diagnostics harness make_pkgs; do
+  for f in common diagnostics harness make_pkgs pkgs_support; do
     printf 't_%s_ok() { :; }\n' "$f" > "$SUITE/test_$f.sh"
   done
 }
@@ -410,7 +410,7 @@ t_harness_real_tests_pass_under_unusual_tmpdir_paths() {
   # tab and (second run) a newline.  Diagnostics tests skip under a newline
   # because .pc files cannot represent it; a colon is unsupported (PATH).
   sandbox_new
-  local sel='^(t_common_trash_put_and_empty_removes_paths|t_common_lock_run_success_passes_arguments_and_releases|t_common_lock_contention_blocks_until_release|t_pkgs_autotools_exact_argv_hook_order_and_kinds|t_pkgs_success_cleans_temp_files_work_dirs_and_generated_configs|t_diag_valid_package_reports_only_header|t_diag_symlinked_root_reports_false_location_mismatch)$'
+  local sel='^(t_pkgs_support_trash_put_and_empty_removes_paths|t_pkgs_support_lock_run_success_passes_arguments_and_releases|t_pkgs_support_lock_contention_blocks_until_release|t_pkgs_autotools_exact_argv_hook_order_and_kinds|t_pkgs_success_cleans_temp_files_work_dirs_and_generated_configs|t_diag_valid_package_reports_only_header|t_diag_symlinked_root_reports_false_location_mismatch)$'
   local odd1="$SB/odd dir/it's"$'\t'"x" odd2="$SB/new"$'\n'"line/it's dir"
   mkdir -p -- "$odd1" "$odd2"
   host_bounded 240 "TMPDIR=$odd1" -- "$BASH_BIN" "$INFRA_HERE/run-infrastructure-tests.sh" -k "$sel"

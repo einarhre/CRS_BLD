@@ -11,6 +11,7 @@ declare -r PARALLEL_LOOP=1  # Parallelise the loop over build kinds (e.g. 32bit,
 
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/etc/common.sh"
+source "$script_dir/etc/pkgs-support.sh"
 unset script_dir
 
 # Define a trash bin for temporary directories and files to be
