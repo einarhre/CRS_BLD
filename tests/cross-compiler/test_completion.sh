@@ -149,6 +149,7 @@ t_cc_changing_only_ncrs_keeps_the_cache() {
   cc_expect_hit NCRS=7
   cc_expect_hit NCRS=1
   cc_expect_hit NCRS=64
+  cc_expect_hit NCRS=08
   assert_records_unchanged
 }
 
@@ -158,7 +159,7 @@ t_cc_invalid_ncrs_is_rejected_with_a_complete_cache() {
   cc_complete
   assert_records_per_target
   cc_expect_hit
-  for v in abc 0 -1 1.5 ''
+  for v in abc 0 -1 1.5 '' 4097 999999999999999999999999999999
   do
     run_crs "NCRS=$v" -- "$CCV"
     assert_rc_nonzero "NCRS='$v'"

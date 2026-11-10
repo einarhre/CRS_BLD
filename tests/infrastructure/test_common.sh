@@ -41,48 +41,60 @@ t_common_comp_fail_without_argument_is_unbound_error() {
 
 # --------------------------------------------------------------------- NCRS
 
-t_common_ncrs_accepts_positive_integers() {
+t_common_ncrs_accepts_and_canonicalizes_decimal() {
   sandbox_new
-  local v
-  for v in 1 4 16 007 08 010 +4 ' 4'; do
-    run_common "NCRS=$v" -- 'echo "NCRS=[$NCRS]"'
-    assert_rc 0 "$RC" "NCRS=[$v] accepted"
-    assert_eq "NCRS=[$v]" "$OUT" "NCRS=[$v] preserved verbatim, no diagnostic"
+  local pair
+  for pair in 1:1 4:4 16:16 007:7 08:8 010:10 4096:4096 0004096:4096; do
+    run_common -s "NCRS=${pair%:*}" -- 'echo "$NCRS"'
+    assert_rc 0 "$RC" "$pair accepted"
+    assert_eq "${pair#*:}" "$OUT" 'canonical decimal'
+    assert_eq '' "$ERR" 'valid explicit input is quiet'
   done
 }
 
-t_common_ncrs_rejects_zero_and_negative() {
+t_common_ncrs_invalid_rejected_before_host_setup_or_mutation() {
   sandbox_new
-  local v
-  for v in 0 -1 -0 -100 000; do
-    run_common -s "NCRS=$v" -- 'echo reached'
-    assert_rc 1 "$RC" "NCRS=$v rejected"
-    assert_eq 'No processing units appear to be available for this machine (nproc --all)!' "$OUT" "NCRS=$v message (stdout)"
-    assert_eq '' "$ERR" "NCRS=$v: nothing on stderr"
+  local v script
+  # Exercise both real drivers and common itself, including Unicode digits.
+  for v in '' 0 00 -0 -1 +4 ' 4' '4 ' 4x 1.5 0x10 1e3 '1 2' '4;' 4097 2147483648 999999999999999999999999999999 ０８ ١٢; do
+    for script in "$PKGS_SH" "$CRS_ROOT/make_cross-compiler.sh" "$COMMON_SH"; do
+      run_ctl -s "NCRS=$v" MOCK_UNAME=Darwin -- "$BASH_BIN" --noprofile --norc "$script"
+      assert_rc 1 "$RC" "[$v] rejected by $script"
+      assert_contains "$ERR" NCRS 'NCRS wins over missing Homebrew'
+      assert_not_contains "$ERR" Homebrew 'no host setup first'
+      assert_eq '' "$OUT" 'no stdout'
+      assert_absent "$SB/pref" 'no prefix mutation'
+      assert_eq '' "$(ls -A "$SB/tmp")" 'no temporary allocation'
+    done
   done
+  ctl_replace pkg-config "$SB/missing-pkg-config"
+  run_common -s NCRS=abc -- ':'
+  assert_contains "$ERR" NCRS 'NCRS wins over missing pkg-config'
+  assert_not_contains "$ERR" 'pkg-config' 'explicit preflight precedes lookup'
 }
 
-t_common_ncrs_unset_or_empty_defaults_to_nproc() {
+t_common_ncrs_unset_uses_validated_nproc_default() {
   sandbox_new
-  local n; n="$(nproc --all)"
-  run_common -- 'echo "$NCRS"'
-  assert_eq "$n" "$OUT" 'unset -> nproc --all'
-  run_common NCRS= -- 'echo "$NCRS"'
-  assert_eq "$n" "$OUT" 'empty -> nproc --all'
-}
-
-t_common_ncrs_malformed_values_are_accepted_with_test_diagnostic() {
-  # Current behavior (a validation gap, see report): `[ "$NCRS" -le 0 ]` returns
-  # status 2 for a non-integer, which `if` treats as false.  The value is
-  # accepted unchanged, with only a bash diagnostic, and common.sh succeeds.
-  sandbox_new
-  local v
-  for v in abc 4x 1.5 0x10 '1 2' '4;' 99999999999999999999; do
-    run_common -s "NCRS=$v" -- 'echo "NCRS=[$NCRS]"'
-    assert_rc 0 "$RC" "malformed NCRS=[$v] does not fail"
-    assert_contains "$ERR" 'integer expression expected' "diagnostic for [$v] on stderr"
-    assert_eq "NCRS=[$v]" "$OUT" "[$v] kept as is"
+  printf '#!/bin/sh\n[ "$*" = --all ] || exit 9\nprintf "%%s" "$MOCK_NPROC"\nexit "$MOCK_NPROC_RC"\n' | write_exe "$SB/nproc"
+  ctl_replace nproc "$SB/nproc"
+  local value
+  for value in 7 0007 5000 999999999999999999999999999999; do
+    run_common -s "MOCK_NPROC=$value" MOCK_NPROC_RC=0 -- 'echo "$NCRS"'
+    assert_rc 0 "$RC" 'default accepted'
+    if [[ "$value" == 7 || "$value" == 0007 ]]; then
+      assert_eq 7 "$OUT" 'canonical default'; assert_eq '' "$ERR" 'quiet default'
+    else
+      assert_eq 4096 "$OUT" 'default clamped'; assert_contains "$ERR" 'clamping to 4096'
+    fi
   done
+  for value in '' abc 0 00 +4 '7 ' ０８; do
+    run_common -s "MOCK_NPROC=$value" MOCK_NPROC_RC=0 -- 'echo reached'
+    assert_rc 1 "$RC" 'invalid default rejected'
+    assert_contains "$ERR" 'nproc --all'; assert_eq '' "$OUT" 'not reached'
+  done
+  run_common -s MOCK_NPROC=7 MOCK_NPROC_RC=3 -- ':'
+  assert_rc 1 "$RC" 'even plausible output with failed nproc is rejected'
+  assert_contains "$ERR" 'nproc --all failed'
 }
 
 t_common_ncrs_is_readonly() {

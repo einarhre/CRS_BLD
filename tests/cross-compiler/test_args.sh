@@ -174,3 +174,17 @@ a_r1_ncrs_error_names_the_variable() {
   assert_rc_nonzero
   assert_output_matches 'NCRS' "error message names NCRS"
 }
+
+# Explicit boundaries use canonical decimal job counts without octal arithmetic.
+t_r1_ncrs_decimal_boundaries() {
+  new_sandbox; default_sources
+  local pair
+  for pair in 007:7 08:8 010:10 4096:4096 0004096:4096; do
+    run_crs "NCRS=${pair%:*}" -- 13.2.0
+    assert_rc0
+    # Completed repeats are hits; first invocation must pass canonical jobs.
+    if [[ "$RUNNO" -eq 1 ]]; then
+      assert_eq "$(lines make 1 | awk -F '\t' '$4!=""{print $4}' | sort -u)" 7 'canonical -j'
+    fi
+  done
+}

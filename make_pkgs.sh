@@ -27,6 +27,7 @@ declare -rA BUILD_KINDS_REV=(
   [${BUILD_KINDS[1]}]=${BUILD_KINDS[0]}
 )
 
+# NCRS is a canonical decimal in 1..4096, validated by common.sh.
 # For parallelising the loop
 declare -ri PARALLEL_RUNS=$((
   (1 + (${#TARGETS[@]} * ${#BUILD_KINDS[@]} -1) * PARALLEL_LOOP) <= $NCRS ?

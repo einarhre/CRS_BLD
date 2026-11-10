@@ -168,9 +168,32 @@ fi
         for args in [(), ("12.2.0", "extra"), ("2.2.0",), ("12.2",), ("bogus",)]:
             self.run_build(*args, ok=False)
             self.assertEqual(self.events(), "")
-        for jobs in ("abc", "0", "-1", "1.5", ""):
+        for jobs in ("abc", "0", "-1", "1.5", "", "4097", "2147483648", "9" * 30):
             self.run_build("12.2.0", NCRS=jobs, ok=False)
             self.assertEqual(self.events(), "")
+
+    def test_ncrs_canonical_and_default_jobs(self):
+        for value, expected in (("007", "7"), ("08", "8"), ("010", "10"), ("4096", "4096")):
+            with self.subTest(value=value):
+                # Isolated fresh fixture so completion hits cannot mask job arguments.
+                fixture = Recovery("run_build")
+                fixture.setUp()
+                try:
+                    fixture.run_build("12.2.0", NCRS=value)
+                    self.assertRegex(fixture.events(), r"make [^\n]+ -j " + expected + r"(?:\n| )")
+                finally:
+                    fixture.doCleanups()
+
+    def test_ncrs_nproc_output_and_failure(self):
+        self.env.pop("NCRS", None)
+        for value, status in (("", 0), ("abc", 0), ("0", 0), ("7", 3)):
+            self.write_exec(self.bin / "nproc", "#!/bin/sh\nprintf '%s' " + shlex.quote(value) + "\nexit " + str(status) + "\n")
+            self.run_build("12.2.0", ok=False)
+            self.assertEqual(self.events(), "")
+        self.write_exec(self.bin / "nproc", "#!/bin/sh\necho 5000\n")
+        output = self.run_build("12.2.0")
+        self.assertIn("clamping to 4096", output)
+        self.assertRegex(self.events(), r"make [^\n]+ -j 4096(?:\n| )")
 
     def test_archive_formats_and_ambiguity(self):
         (self.cpl / "gcc-12.2.0.tar.gz").unlink()

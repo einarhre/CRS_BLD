@@ -319,7 +319,7 @@ case "$PWD" in "$PREF/build/"*|"$PREF/install/native") exit 1;; esac
     def test_invalid_job_count_is_still_rejected_with_a_cache(self):
         self.complete()
         events = self.events()
-        for value in ("abc", "0", "-1", "1.5", ""):
+        for value in ("abc", "0", "-1", "1.5", "", "4097", "2147483648", "9" * 30):
             self.fixture.run_build(VERSION, NCRS=value, ok=False)
         self.assertEqual(events, self.events())
 

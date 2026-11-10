@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ ${NCRS+x} && ! ${NCRS} =~ ^[0-9]+$ ]] ||
-   [[ ${NCRS+x} && ! ${NCRS} =~ [1-9] ]]
-then
-  echo "NCRS must be a positive integer." >&2
-  exit 1
-fi
-
 script_dir="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/etc/common.sh"
 completion_script="$script_dir/make_cross-compiler.sh"

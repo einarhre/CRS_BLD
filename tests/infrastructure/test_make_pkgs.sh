@@ -534,23 +534,18 @@ t_pkgs_job_counts_follow_ncrs() {
   done
 }
 
-t_pkgs_malformed_ncrs_current_behavior() {
-  # Documented gaps: common.sh lets malformed values through; the arithmetic in
-  # make_pkgs.sh then either aborts or accepts them (e.g. 0x10 acts as 16).
+t_pkgs_canonical_ncrs_boundary_jobs() {
   pkgs_sandbox
-  mkcfg alpha "$CUSTOM_BUILD"
-  local v
-  for v in abc 4x 08; do
-    pkgs_run NCRS="$v" -- alpha
-    [[ "$RC" -ne 0 ]] || fail "NCRS=$v unexpectedly succeeded"
-    assert_eq '' "$(cat "$HOOK_LOG")" "NCRS=$v: nothing built"
+  mkcfg alpha "${AUTOTOOLS_BASE[@]}" "$CONFIGURE_SPY_HOOK"
+  local pair t k
+  for pair in 007:1 08:2 010:2 4096:1024 0004096:1024; do
+    : > "$SPY_LOG"
+    pkgs_run "NCRS=${pair%:*}" -- alpha
+    assert_rc 0 "$RC" "status ($OUT)"
+    for t in "${PKG_TRGS[@]}"; do for k in "${PKG_KINDS[@]}"; do
+      expect_call make "$(pkg_bld "$t" "$k" alpha)" "$t-gcc" -j "${pair#*:}"
+    done; done
   done
-  pkgs_run NCRS=abc -- alpha;  assert_contains "$OUT" 'integer expression expected' 'abc diagnostic from common.sh'
-  pkgs_run NCRS=0x10 -- alpha
-  assert_rc 0 "$RC" "NCRS=0x10 is accepted ($OUT)"
-  pkgs_run NCRS=0 -- alpha
-  assert_rc 1 "$RC" 'NCRS=0 rejected by common.sh'
-  assert_contains "$OUT" 'No processing units appear to be available'
 }
 
 # ---------------------------------------------------------------- cleanup
@@ -679,4 +674,30 @@ t_pkgs_run_leaves_checkout_listing_and_tracked_files_unchanged() {
   pkgs_run -- alpha
   assert_rc 0 "$RC" "status ($OUT)"
   assert_eq "$before" "$(_checkout_state)" 'checkout listings and tracked-file status unchanged'
+}
+
+t_pkgs_nproc_defaults_and_failures_before_workers() {
+  pkgs_sandbox
+  mkcfg alpha "${AUTOTOOLS_BASE[@]}" "$CONFIGURE_SPY_HOOK"
+  printf '#!/bin/sh\nprintf "%%s" "$MOCK_NPROC"\nexit "$MOCK_NPROC_RC"\n' | write_exe "$SB/nproc"
+  ctl_replace nproc "$SB/nproc"
+  local value pair t k
+  for value in '' abc 0; do
+    pkgs_run -NCRS "MOCK_NPROC=$value" MOCK_NPROC_RC=0 -- alpha
+    assert_rc 1 "$RC" 'invalid default'
+    assert_contains "$OUT" 'nproc --all'
+    assert_eq '' "$(cat "$HOOK_LOG")" 'no hooks'
+    assert_eq '' "$(ls -A "$SB/tmp")" 'no allocation'
+    assert_absent "$PREF_DIR/build" 'no build mutation'
+  done
+  pkgs_run -NCRS MOCK_NPROC=7 MOCK_NPROC_RC=3 -- alpha
+  assert_rc 1 "$RC" 'failed nproc cannot supply a value'
+  for pair in 7:1 5000:1024; do
+    : > "$SPY_LOG"
+    pkgs_run -NCRS "MOCK_NPROC=${pair%:*}" MOCK_NPROC_RC=0 -- alpha
+    assert_rc 0 "$RC" 'valid default'
+    for t in "${PKG_TRGS[@]}"; do for k in "${PKG_KINDS[@]}"; do
+      expect_call make "$(pkg_bld "$t" "$k" alpha)" "$t-gcc" -j "${pair#*:}"
+    done; done
+  done
 }
