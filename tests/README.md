@@ -7,12 +7,15 @@ tests/run-tests.sh
 ```
 
 The Bash entry point runs the existing cross-compiler shell suite, the existing
-Python unittest suite, and focused Bash checks of the aggregate runner. Once the
-shared Bash prerequisite is accepted, all three are attempted in that order even
-when an earlier suite fails. If Bash is missing or too old, all three dependent
+Python unittest suite, focused Bash checks of the aggregate runner, and the
+infrastructure characterization suite (see below). Once the
+shared Bash prerequisite is accepted, all four are attempted in that order even
+when an earlier suite fails. If Bash is missing or too old, all four dependent
 phases are explicitly reported as `not run`, without numeric exit statuses;
 the Python fixtures also require that Bash. The overall status is zero only
-when all three succeed. Missing mandatory runners or interpreters, failed
+when all four succeed. The infrastructure runner and each of its three
+components (`t_common_*`, `t_diag_*`, `t_pkgs_*`) must exist and contribute at
+least one hard test, otherwise the phase fails. Missing mandatory runners or interpreters, failed
 discovery and empty suites are errors, not skips. Shell discovery must include
 at least one hard (`t_*`) test. The dispatcher takes no filtering arguments.
 
@@ -70,6 +73,35 @@ bash -n make_cross-compiler.sh
 git diff --check
 ```
 
+## Infrastructure characterization tests
+
+`tests/infrastructure/` characterizes the *current* behavior of `etc/common.sh`
+(`test_common.sh`), `etc/diagnostics.sh` (`test_diagnostics.sh`) and
+`make_pkgs.sh` (`test_make_pkgs.sh`). They assert what the scripts do today,
+including quirks, not what a corrected version should do; a deliberate behavior
+change must update the matching test.
+
+```sh
+tests/infrastructure/run-infrastructure-tests.sh        # all
+tests/infrastructure/run-infrastructure-tests.sh -l     # list
+tests/infrastructure/run-infrastructure-tests.sh -k '_lock_|_ncrs_'
+```
+
+Every test runs in a fresh `bash` (common.sh must not be sourced twice) under a
+hard timeout (`INFRA_TEST_TIMEOUT`, default 120 s) in a disposable sandbox under
+`TMPDIR`. `t_*` tests gate the exit status. `k_*` tests demonstrate known
+defects (lock leak when a wrapped command fails under `set -e`, endless wait on
+an uncreatable lock path, a leaked per-configuration temp file after
+`make_pkgs.sh` worker failures); they are non-gating and print
+`KNOWN-DEFECT-REPRODUCED` or `KNOWN-DEFECT-NOT-REPRODUCED`. Status 77 means skip
+(`make_pkgs.sh` tests need Bash 5.1 for `wait -n -p`).
+
+The `make_pkgs.sh` tests use tiny synthetic configurations under a temporary
+`PREF`; make, meson, ninja, cmake, the configure script and the glib helpers are
+command spies, and compilers, downloaders, git, patch and package installers are
+"forbidden" spies that fail the test if called. Homebrew/macOS handling is
+exercised with a mocked `uname`/`brew` on Linux only; native macOS is not tested.
+
 ## Language policy and prerequisites
 
 Bash is preferred for test orchestration and ordinary command workflows. Python
@@ -109,9 +141,9 @@ GNU make fixtures. They perform no real GCC/MinGW compilation. Preserve valuable
 source, build and install trees; never use a production prefix as a test fixture.
 
 Native macOS operation and real compiler correctness are not established by
-these suites. The Python macOS test is a Linux simulation. There are currently
-no direct suites for `make_pkgs.sh` or `etc/diagnostics.sh`, and `etc/common.sh`
-is largely covered indirectly. The aggregate runner rejects an entirely empty
+these suites. The Python macOS test is a Linux simulation. `etc/common.sh`,
+`etc/diagnostics.sh` and `make_pkgs.sh` have direct characterization tests
+(above), not real-build coverage; package recipes under `src/pkg/cfg` are not tested. The aggregate runner rejects an entirely empty
 suite, but does not enforce a complete baseline manifest or detect every partial
 discovery loss. Existing timeout, environment-isolation and advisory policies
 are unchanged. For the completion-cache contract and limits, see

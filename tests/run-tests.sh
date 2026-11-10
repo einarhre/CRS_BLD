@@ -59,6 +59,26 @@ run_runner_checks() {
   "$bash_bin" "$runner"
 }
 
+run_infrastructure_suite() {
+  local runner="$here/infrastructure/run-infrastructure-tests.sh" names prefix
+  [[ -f "$runner" && -r "$runner" && -s "$runner" ]] || {
+    echo "ERROR: mandatory infrastructure runner is missing, empty or unreadable: $runner" >&2
+    return 1
+  }
+  names="$("$bash_bin" "$runner" -l)" || {
+    echo 'ERROR: infrastructure test discovery failed' >&2
+    return 1
+  }
+  # Each mandatory component must contribute at least one hard test.
+  for prefix in t_common_ t_diag_ t_pkgs_; do
+    [[ $'\n'"$names" == *$'\n'"$prefix"* ]] || {
+      echo "ERROR: mandatory infrastructure suite is empty (no $prefix* tests discovered)" >&2
+      return 1
+    }
+  done
+  "$bash_bin" "$runner"
+}
+
 bash_bin="$(command -v bash)" || bash_bin=''
 bash_ready=no
 if [[ -z "$bash_bin" ]] || ! "$bash_bin" -c \
@@ -73,6 +93,7 @@ fi
 shell_rc=not-run
 python_rc=not-run
 checks_rc=not-run
+infra_rc=not-run
 echo '=== Shell suite ==='
 if [[ "$bash_ready" == yes ]]; then
   run_shell_suite
@@ -97,6 +118,14 @@ else
   echo 'NOT RUN: runner checks require Bash >= 4.4' >&2
 fi
 
+echo '=== Infrastructure characterization suite ==='
+if [[ "$bash_ready" == yes ]]; then
+  run_infrastructure_suite
+  infra_rc=$?
+else
+  echo 'NOT RUN: infrastructure suite requires Bash >= 4.4' >&2
+fi
+
 report_phase() {
   if [[ "$2" == not-run ]]; then
     printf '%s: not run (Bash prerequisite unavailable)\n' "$1"
@@ -108,4 +137,5 @@ echo '=== Suite exit statuses (counts and skips are reported above) ==='
 report_phase 'Shell suite' "$shell_rc"
 report_phase 'Python suite' "$python_rc"
 report_phase 'Runner checks' "$checks_rc"
-[[ "$shell_rc" == 0 && "$python_rc" == 0 && "$checks_rc" == 0 ]]
+report_phase 'Infrastructure suite' "$infra_rc"
+[[ "$shell_rc" == 0 && "$python_rc" == 0 && "$checks_rc" == 0 && "$infra_rc" == 0 ]]

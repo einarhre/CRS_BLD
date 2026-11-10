@@ -14,7 +14,7 @@ passed=0
 fixture() {
   local name="$1"
   work="$scratch/$name/tests with spaces"
-  mkdir -p "$work/runner" "$work/bin"
+  mkdir -p "$work/runner" "$work/bin" "$work/infrastructure"
   cp "$here/../run-tests.sh" "$work/run-tests.sh"
   # Each aggregate invocation runs fake self-checks, avoiding recursion.
   printf '#!/bin/sh\nprintf "checks\\n" >> "$EVENTS"\nexit 0\n' > "$work/runner/test_run_tests.sh"
@@ -31,6 +31,19 @@ echo 'SKIP  t_fake_optional'
 echo '        fake optional prerequisite'
 echo 'passed: 2   failed: 0   advisory-failed: 0   skipped: 1   demos-reproduced: 0'
 exit "${SHELL_RC:-0}"
+SH
+  # Fake infrastructure runner: records to a separate file so the existing
+  # three-phase event assertions are unchanged.
+  cat > "$work/infrastructure/run-infrastructure-tests.sh" <<'SH'
+if [[ $# == 1 && $1 == -l ]]; then
+  [[ ${INFRA_DISCOVERY_RC:-0} == 0 ]] || exit "$INFRA_DISCOVERY_RC"
+  printf '%s\n' "${INFRA_NAMES-$'t_common_x\nt_diag_x\nt_pkgs_x'}"
+  exit 0
+fi
+[[ $# == 0 ]] || { echo "unexpected infrastructure runner arguments: $*" >&2; exit 3; }
+printf 'infra\n' >> "$EVENTS.infra"
+echo 'passed: 3   failed: 0   skipped: 0'
+exit "${INFRA_RC:-0}"
 SH
   cat > "$work/test_fake.py" <<'PY'
 import unittest
@@ -54,13 +67,14 @@ SH
   chmod +x "$work/bin/python3"
   ln -s "$real_bash" "$work/bin/bash"
   ln -s "$(command -v dirname)" "$work/bin/dirname"
-  : > "$work/events"
+  : > "$work/events"; : > "$work/events.infra"
 }
 
 run() {
   rc=0
   # A restricted PATH makes missing interpreters deterministic on any host.
   ( cd "$scratch"; env -u SHELL_NAMES -u DISCOVERY_RC -u SHELL_RC -u PYTHON_RC \
+      -u INFRA_NAMES -u INFRA_DISCOVERY_RC -u INFRA_RC \
       -u PYTHONDONTWRITEBYTECODE -u PYTHONPYCACHEPREFIX \
       "PATH=$work/bin" "EVENTS=$work/events" "REAL_PYTHON=$real_python" \
       "REAL_BASH=$real_bash" "$@" "$real_bash" "$work/run-tests.sh" \
@@ -219,5 +233,58 @@ printf '#!/bin/sh\nprintf "checks\\n" >> "$EVENTS"\nexit 6\n' > "$work/runner/te
 run
 bad; events $'shell\npython\nchecks'; contains 'Runner checks: exit 6'
 pass runner_check_failure_reported
+
+infra_events() { [[ "$(cat "$work/events.infra")" == "$1" ]] || fail 'unexpected infrastructure suite execution'; }
+
+fixture infra_success
+run
+ok; events $'shell\npython\nchecks'; infra_events infra
+contains '=== Infrastructure characterization suite ==='; contains 'Infrastructure suite: exit 0'
+pass infrastructure_suite_runs_last_and_is_reported
+
+fixture infra_failure
+run INFRA_RC=5
+bad; events $'shell\npython\nchecks'; infra_events infra
+contains 'Infrastructure suite: exit 5'; contains 'Shell suite: exit 0'
+pass infrastructure_failure_fails_aggregate
+
+fixture infra_earlier_failure_still_runs_infra
+run SHELL_RC=9
+bad; infra_events infra; contains 'Shell suite: exit 9'; contains 'Infrastructure suite: exit 0'
+pass earlier_failure_does_not_skip_infrastructure_suite
+
+fixture infra_missing
+rm "$work/infrastructure/run-infrastructure-tests.sh"
+run
+bad; events $'shell\npython\nchecks'; contains 'mandatory infrastructure runner is missing'
+contains 'Infrastructure suite: exit 1'
+pass missing_infrastructure_runner_rejected
+
+fixture infra_empty_runner
+: > "$work/infrastructure/run-infrastructure-tests.sh"
+run
+bad; contains 'mandatory infrastructure runner is missing, empty'
+pass empty_infrastructure_runner_rejected
+
+fixture infra_no_tests
+run INFRA_NAMES=
+bad; infra_events ''; contains 'mandatory infrastructure suite is empty'
+pass empty_infrastructure_suite_rejected
+
+fixture infra_component_missing
+run INFRA_NAMES=$'t_common_x\nt_pkgs_x\nk_diag_demo'
+bad; infra_events ''; contains 'no t_diag_* tests discovered'
+pass infrastructure_component_without_hard_tests_rejected
+
+fixture infra_discovery_failure
+run INFRA_DISCOVERY_RC=4
+bad; infra_events ''; contains 'infrastructure test discovery failed'
+pass infrastructure_discovery_failure_rejected
+
+fixture infra_bash_gate
+rm "$work/bin/bash"
+run
+bad; infra_events ''; contains 'NOT RUN: infrastructure suite'; contains 'Infrastructure suite: not run'
+pass missing_bash_marks_infrastructure_not_run
 
 printf 'Runner checks passed: %s; failed: 0; skipped: 0\n' "$passed"
