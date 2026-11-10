@@ -439,3 +439,24 @@ t_diag_checker_is_owned_by_diagnostics_and_requires_three_arguments() {
     check_pc_vs_files "$SB/missing" target kind'
   assert_rc 0 "$RC" 'diagnostics owns a three-argument checker'
 }
+
+t_diag_expand_pc_path_keeps_globals_and_caller_locals_isolated() {
+  diag_sandbox
+  mkpc "$SB/a.pc" "$SB/a" 'Libs:' 'sharedlibdir=${libdir}/shared' 'toolexeclibdir=${libdir}/tools'
+  mkpc "$SB/b.pc" "$SB/b" 'Libs:'
+  run_ctl NCRS=4 -- "$BASH_BIN" --noprofile --norc -c '
+    source "$DIAG_SH" "$SB/missing" >/dev/null
+    unset sharedlibdir toolexeclibdir
+    expand_pc_path "$SB/a.pc" '\''${sharedlibdir}'\'' >/dev/null
+    [[ ! ${sharedlibdir+x} && ! ${toolexeclibdir+x} ]] || exit 8
+    sharedlibdir=global-shared; toolexeclibdir=global-tools
+    expand_pc_path "$SB/b.pc" '\''${toolexeclibdir}'\'' >/dev/null
+    [[ "$sharedlibdir" == global-shared && "$toolexeclibdir" == global-tools ]] || exit 9
+    caller() {
+      local sharedlibdir=caller-shared toolexeclibdir=caller-tools
+      expand_pc_path "$SB/a.pc" '\''${sharedlibdir}'\'' >/dev/null
+      [[ "$sharedlibdir" == caller-shared && "$toolexeclibdir" == caller-tools ]]
+    }
+    caller'
+  assert_rc 0 "$RC" 'direct calls never leak into caller scope'
+}

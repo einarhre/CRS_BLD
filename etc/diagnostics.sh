@@ -53,6 +53,8 @@ function expand_pc_path() {
   local prefix=''
   local exec_prefix=''
   local libdir=''
+  local sharedlibdir=''
+  local toolexeclibdir=''
 
   prefix="$(pc_var_value "$PC" prefix || true)"
   exec_prefix="$(pc_var_value "$PC" exec_prefix || true)"
