@@ -647,16 +647,19 @@ t_pkgs_all_workers_failing_are_all_listed() {
   for t in "${PKG_TRGS[@]}"; do for k in "${PKG_KINDS[@]}"; do assert_contains "$OUT" "alpha:$t:$k"; done; done
 }
 
-k_pkgs_failed_configuration_leaks_per_config_temp_file() {
-  # KNOWN DEFECT (audit B6): on `exit 1` after worker failures the per-
-  # configuration trash-bin file (mktemp) is never emptied or removed.
+t_pkgs_failed_configuration_cleans_list_and_preserves_shared_artifacts() {
   pkgs_sandbox
-  mkcfg alpha 'CFG_BUILD_SYSTEM=custom' 'cfg_custom_build() { return 1; }'
+  mkcfg alpha 'CFG_BUILD_SYSTEM=custom' 'cfg_custom_build() {
+    mkdir -p "$SB/shared-host-tools"
+    echo valuable > "$SB/shared-host-tools/object"
+    put_into_trash_bin "$after_config_build_trash_bin" "$SB/shared-host-tools"
+    return 1
+  }'
   pkgs_run -- alpha
-  assert_rc 1 "$RC" 'status'
-  local n; n="$(find "$SB/tmp" -type f -printf . | wc -c)"
-  assert_eq 1 "$n" 'exactly one leaked temp file in TMPDIR'
-  echo "leaked: $(norm_sb "$(find "$SB/tmp" -type f)")"
+  assert_rc 1 "$RC" 'worker failure'
+  assert_contains "$OUT" '4 packages failed to compile:'
+  assert_eq '' "$(ls -A "$SB/tmp")" 'no temporary lists left'
+  assert_exists "$SB/shared-host-tools/object" 'shared failure artifacts preserved'
 }
 
 t_pkgs_run_leaves_checkout_listing_and_tracked_files_unchanged() {
@@ -810,5 +813,26 @@ t_pkgs_generator_write_failure_removes_partial_and_releases_lock() {
       assert_absent "$PREF_DIR/build/pkg/$t.meson.lock"
       assert_absent "$PREF_DIR/build/pkg/$t.cmake.lock"
     done
+  done
+}
+
+t_pkgs_mktemp_failure_is_detected_at_each_allocation() {
+  pkgs_sandbox
+  mkcfg alpha "$CUSTOM_BUILD"
+  local real_mktemp; real_mktemp="$(command -v mktemp)"
+  # Count parent/config allocations deterministically. Worker allocations all
+  # follow the two parent calls; no concurrent counter update is needed there.
+  printf '#!%s\nn=$(cat "$SB/mktemp-count" 2>/dev/null || echo 0)\nif [[ "$n" -ge 2 ]]; then stage=worker; else stage=$n; echo $((n+1)) > "$SB/mktemp-count"; fi\nif [[ "$stage" == "$FAIL_ALLOC" ]]; then exit 7; fi\nexec %q "$@"\n' "$BASH_BIN" "$real_mktemp" | write_exe "$SB/mktemp-spy"
+  ctl_replace mktemp "$SB/mktemp-spy"
+  local stage expected
+  for stage in 0 1 worker; do
+    rm -f "$SB/mktemp-count"
+    pkgs_run "FAIL_ALLOC=$stage" -- alpha
+    assert_rc 1 "$RC" 'allocation failure'
+    case "$stage" in 0) expected=parent ;; 1) expected=configuration ;; *) expected=worker ;; esac
+    assert_contains "$OUT" "Cannot allocate $expected temporary list (mktemp)."
+    assert_eq '' "$(cat "$HOOK_LOG")" 'nothing built'
+    assert_eq '' "$(ls -A "$SB/tmp")" 'already-owned lists cleaned'
+    assert_absent "$PREF_DIR/build" 'no worker directories created'
   done
 }

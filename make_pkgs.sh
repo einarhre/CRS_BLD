@@ -17,8 +17,23 @@ unset script_dir
 # Define a trash bin for temporary directories and files to be
 # deleted on exit from this script.
 # Add to this bin with 'put_into_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" dir_or_file, ...'
-declare -r AFTER_ALL_BUILDS_TRASH_BIN="$(mktemp -q)"
-trap 'empty_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN"' EXIT
+if ! AFTER_ALL_BUILDS_TRASH_BIN="$(mktemp -q)" || [[ -z "$AFTER_ALL_BUILDS_TRASH_BIN" ]]; then
+  echo 'Cannot allocate parent temporary list (mktemp).' >&2
+  exit 1
+fi
+declare -r AFTER_ALL_BUILDS_TRASH_BIN
+function cleanup_pkgs_parent() {
+  local status=$? cleanup_status=0
+  empty_trash_bin "$AFTER_ALL_BUILDS_TRASH_BIN" || cleanup_status=$?
+  # On failure remove only the current list, preserving shared ICU host tools.
+  # Successful drains unset the variable, so stale mktemp names are never kept.
+  if [[ -n "${after_config_build_trash_bin:-}" ]]; then
+    rm -f -- "$after_config_build_trash_bin" || cleanup_status=$?
+  fi
+  [[ "$status" -ne 0 ]] || status=$cleanup_status
+  exit "$status"
+}
+trap cleanup_pkgs_parent EXIT
 
 # Constant initialisation
 declare -ra BUILD_KINDS=([0]="static" [1]="shared")
@@ -157,7 +172,12 @@ function process_cfg() (
   # Define a trash bin for temporary directories and files to be
   # deleted on exit from this subshell
   # Add to this bin with 'put_into_trash_bin "$WITHIN_BUILD_TRASH_BIN" dir_or_file, ...'
-  declare -r WITHIN_BUILD_TRASH_BIN="$(mktemp -q)"
+  local WITHIN_BUILD_TRASH_BIN
+  if ! WITHIN_BUILD_TRASH_BIN="$(mktemp -q)" || [[ -z "$WITHIN_BUILD_TRASH_BIN" ]]; then
+    echo 'Cannot allocate worker temporary list (mktemp).' >&2
+    return 1
+  fi
+  readonly WITHIN_BUILD_TRASH_BIN
   trap 'empty_trash_bin "$WITHIN_BUILD_TRASH_BIN"' EXIT
 
   # Build, patch and install directories
@@ -460,7 +480,10 @@ EOD
 
 for cfg in "${CFG_ORDER[@]}"
 do
-  declare after_config_build_trash_bin="$(mktemp -q)"
+  if ! after_config_build_trash_bin="$(mktemp -q)" || [[ -z "$after_config_build_trash_bin" ]]; then
+    echo 'Cannot allocate configuration temporary list (mktemp).' >&2
+    exit 1
+  fi
   declare prc=''
   declare pid=''
   declare -a failed=()
