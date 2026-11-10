@@ -185,19 +185,14 @@ t_pkgs_support_lock_run_ignores_release_failure() {
   assert_contains "$OUT" 'rc=0' 'a vanished lock does not change the status'
 }
 
-k_pkgs_support_lock_run_leaks_lock_when_command_fails_under_errexit() {
-  # KNOWN DEFECT: common.sh enables `set -e`; lock_run runs "$@" as a plain
-  # command, so a failing command aborts the shell before lock_release.  The
-  # lock directory is left behind and the next acquirer waits forever.
-  # Reproduced -> exit 0; non-gating.
+t_pkgs_support_lock_run_releases_when_command_fails_under_errexit() {
   sandbox_new
   run_pkgs_support -- 'lock_run "$1" false; echo not-reached' "$SB/L"
-  [[ "$RC" -ne 0 ]] || fail "shell was not aborted (rc=$RC)"
-  assert_not_contains "$OUT" not-reached 'errexit aborted the shell'
-  assert_exists "$SB/L" 'defect: lock directory leaked'
+  assert_rc 1 "$RC" 'errexit status'
+  assert_not_contains "$OUT" not-reached 'caller aborts'
+  assert_absent "$SB/L" 'failed callback releases'
   run_pkgs_support -t 3 -- "$_LOCK_ACQUIRE" "$SB/L"
-  assert_eq 124 "$RC" 'defect: next acquirer blocks (killed by timeout)'
-  echo "lock leaked after failing command; next acquirer timed out"
+  assert_rc 0 "$RC" 'next acquisition succeeds'
 }
 
 k_pkgs_support_lock_acquire_spins_forever_when_parent_missing() {
@@ -241,4 +236,62 @@ t_pkgs_support_compiler_and_diagnostics_source_graph() {
   if grep -Eq '^[[:space:]]*(source|\.)[[:space:]]' "$PKGS_SUPPORT_SH"; then
     fail 'package support sources another script'
   fi
+}
+
+t_pkgs_support_lock_status_exit_shadowing_and_callback_traps() {
+  sandbox_new
+  local n lock_path="$SB/own space'"$'\n'
+  for n in 0 1 7 255; do
+    run_pkgs_support -s -- '
+      mkdir "$SB/foreign"
+      callback() { local LOCKDIR="$SB/foreign"; trap "echo callback-exit >&2" EXIT; exit "$2"; }
+      trap "echo parent-exit >&2" EXIT
+      lock_run "$1" callback x "$2"; echo after' "$lock_path" "$n"
+    assert_rc "$n" "$RC" "$n preserved"
+    assert_absent "$lock_path" 'actual acquired path removed'
+    assert_exists "$SB/foreign" 'shadowed foreign directory preserved'
+    assert_contains "$ERR" callback-exit 'callback trap runs independently'
+    assert_contains "$ERR" parent-exit 'parent trap survives'
+    rmdir "$SB/foreign"
+  done
+  run_pkgs_support -- 'lock_run "$1" sh -c "exit 3" || echo status=$?' "$SB/L"
+  assert_contains "$OUT" status=3 'external last-command status'
+  assert_absent "$SB/L"
+}
+
+t_pkgs_support_lock_nested_failure_plain_and_conditional_callers() {
+  sandbox_new
+  run_pkgs_support -- 'f() { false; echo LATER; }; lock_run "$1" f' "$SB/L"
+  assert_rc 1 "$RC" 'plain caller stops on early failure'
+  assert_not_contains "$OUT" LATER
+  assert_absent "$SB/L"
+  run_pkgs_support -- 'f() { false; echo LATER; }; lock_run "$1" f || echo failed' "$SB/L"
+  assert_rc 0 "$RC" 'Bash conditional context disables callback errexit'
+  assert_contains "$OUT" LATER 'documented Bash limitation'
+  run_pkgs_support -- 'f() { false || return 7; echo LATER; }; lock_run "$1" f || echo status=$?' "$SB/L"
+  assert_contains "$OUT" status=7 'explicit checks work in conditional context'
+  assert_not_contains "$OUT" LATER
+  assert_absent "$SB/L"
+}
+
+t_pkgs_support_lock_release_failure_reports_and_preserves_status() {
+  sandbox_new
+  local n
+  for n in 0 7; do
+    run_pkgs_support -s -- 'f() { touch "$1/item"; return "$2"; }; lock_run "$1" f "$1" "$2"' "$SB/L" "$n"
+    if [[ "$n" -eq 0 ]]; then assert_rc 1 "$RC" 'successful work cannot hide stuck lock'
+    else assert_rc 7 "$RC" 'original failure preserved'; fi
+    assert_contains "$ERR" 'Cannot release lock:'
+    assert_exists "$SB/L/item" 'never recursive removal'
+    rm "$SB/L/item"; rmdir "$SB/L"
+  done
+}
+
+t_pkgs_support_lock_failed_acquisition_does_not_release_foreign_lock() {
+  sandbox_new
+  mkdir "$SB/foreign"
+  run_pkgs_support -- 'lock_acquire() { return 1; }; lock_run "$1" echo BAD' "$SB/foreign"
+  assert_rc 1 "$RC" 'acquire failure'
+  assert_not_contains "$OUT" BAD 'callback not invoked'
+  assert_exists "$SB/foreign"
 }

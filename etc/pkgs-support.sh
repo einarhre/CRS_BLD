@@ -56,17 +56,30 @@ function lock_release() {
   rmdir -- "$LOCKDIR"
 }
 
-# Run a command while holding a lock.
-function lock_run() {
+# Run protected work in a child shell; callback scope/traps cannot alter cleanup.
+# A conditional caller disables errexit throughout callbacks: check critical steps.
+function lock_run() (
   [ $# -ge 2 ] || return 1
   local -r LOCKDIR="$1"; shift
   lock_acquire "$LOCKDIR" || return 1
 
-  "$@"
-  local -r STATUS=$?
-
-  lock_release "$LOCKDIR" 2>/dev/null || true
-
-  return "$STATUS"
-}
-
+  # Bind every path reference now, never from callback dynamic scope at EXIT.
+  # %q also protects spaces, newlines, quotes and shell metacharacters in paths.
+  local __lock_run_cleanup
+  printf -v __lock_run_cleanup '
+    __lock_run_status=$?
+    if ! rmdir -- %q 2>/dev/null; then
+      if [[ -e %q || -L %q ]]; then
+        printf "Cannot release lock: %%s\\n" %q >&2
+        [[ "$__lock_run_status" -ne 0 ]] || __lock_run_status=1
+      fi
+    fi
+    exit "$__lock_run_status"
+  ' "$LOCKDIR" "$LOCKDIR" "$LOCKDIR" "$LOCKDIR"
+  trap "$__lock_run_cleanup" EXIT
+  # Bash defers these traps until the protected foreground child has finished.
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  ( "$@" )
+)

@@ -73,18 +73,18 @@ function cfg_custom_build() {
   local -r ICU_HOST_TOOLS_BLD="$PKG_BLD_DIR/host-tools/build/$CFG_PKG_NAME"
   local -r ALREADY_BUILD="$ICU_HOST_TOOLS_BLD/.built"
   local -r ICU_HOST_TOOLS_LOCK="$ICU_HOST_TOOLS_BLD.lock"
-  mkdir -p -- "$ICU_HOST_TOOLS_BLD"
+  mkdir -p -- "$ICU_HOST_TOOLS_BLD" || return 1
   # Collect for deleting on exit
   if [[ -n "${DELETE_PKG_BLD:-}" ]] && [[ "$DELETE_PKG_BLD" -ne 0 ]]
   then
-    put_into_trash_bin "$after_config_build_trash_bin" "$ICU_HOST_TOOLS_BLD"
+    put_into_trash_bin "$after_config_build_trash_bin" "$ICU_HOST_TOOLS_BLD" || return 1
   fi
 
   function build_host_tools() {
     if [[ ! -f "$ALREADY_BUILD" ]]
     then
       (
-        cd -- "$ICU_HOST_TOOLS_BLD"
+        cd -- "$ICU_HOST_TOOLS_BLD" || exit 1
         env \
           CC=gcc \
           CXX=g++ \
@@ -100,14 +100,14 @@ function cfg_custom_build() {
           PKG_CONFIG_PATH= \
           "$PKG_SRC/icu4c/source/configure" \
             --enable-tests=no \
-            --enable-samples=no
-        make -j "$NJOBS"
-        touch -- "$ALREADY_BUILD"
+            --enable-samples=no || exit 1
+        make -j "$NJOBS" || exit 1
+        touch -- "$ALREADY_BUILD" || exit 1
       ) # Previous environment resumed
     fi
   }
   # Build host tools atomically to avoid concurrent builds.
-  lock_run "$ICU_HOST_TOOLS_LOCK" build_host_tools
+  lock_run "$ICU_HOST_TOOLS_LOCK" build_host_tools || return 1
 
   "$PKG_SRC/icu4c/source/configure" \
     --host="$TRG" \

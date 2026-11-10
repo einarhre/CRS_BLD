@@ -701,3 +701,114 @@ t_pkgs_nproc_defaults_and_failures_before_workers() {
     done; done
   done
 }
+
+# Exercise the real ICU custom-build function with synthetic configure/make only.
+# Other recipe hooks are not executed; compilers remain forbidden spies.
+icu_lock_fixture() {
+  pkgs_sandbox
+  mkdir -p "$SB/icu-source/icu4c/source" "$SB/icu-target"
+  cat > "$SB/icu-source/icu4c/source/configure" <<'SH'
+#!/bin/bash
+if [[ "$*" == *--host=* ]]; then
+  echo "target-configure $PWD" >> "$ICU_LOG"
+else
+  echo host-configure >> "$ICU_LOG"
+  if [[ "$ICU_FAIL" == configure ]] && mkdir "$SB/failed-once" 2>/dev/null; then exit 7; fi
+fi
+SH
+  chmod +x "$SB/icu-source/icu4c/source/configure"
+  cat > "$SB/icu-make" <<'SH'
+#!/bin/bash
+if [[ "$PWD" == "$SB/pkg/host-tools/build/icu" ]]; then
+  echo host-make >> "$ICU_LOG"
+  if [[ "$ICU_FAIL" == make ]] && mkdir "$SB/failed-once" 2>/dev/null; then exit 7; fi
+else
+  echo "target-make $PWD" >> "$ICU_LOG"
+fi
+SH
+  chmod +x "$SB/icu-make"
+  ctl_replace make "$SB/icu-make"
+  : > "$SB/icu.log"
+}
+
+ICU_LOCK_SETUP='
+source "$ICU_CFG"
+PKG_BLD_DIR="$SB/pkg"
+PKG_SRC="$SB/icu-source"
+PKG_BLD="$SB/icu-target"
+PKG_INS="$SB/icu-install"
+CFG=icu
+TRG=x86_64-w64-mingw32
+BKIND=shared
+NJOBS=1
+BUILD_KINDS=(static shared)
+declare -A BUILD_KINDS_REV=([static]=shared [shared]=static)
+DELETE_PKG_BLD=0
+run_hook() { :; }
+cd "$PKG_BLD"
+'
+
+t_pkgs_icu_failed_host_step_never_publishes_marker_or_starts_target() {
+  icu_lock_fixture
+  local phase
+  for phase in configure make; do
+    rm -f "$SB/failed-once" 2>/dev/null || rmdir "$SB/failed-once"
+    : > "$SB/icu.log"
+    run_pkgs_support "ICU_CFG=$CRS_ROOT/src/pkg/cfg/icu.sh" "ICU_LOG=$SB/icu.log" "ICU_FAIL=$phase" -- "$ICU_LOCK_SETUP"'
+      cfg_custom_build || exit 9'
+    assert_rc 9 "$RC" 'conditional caller still propagates host failure'
+    assert_absent "$SB/pkg/host-tools/build/icu/.built"
+    assert_absent "$SB/pkg/host-tools/build/icu.lock"
+    assert_not_contains "$(cat "$SB/icu.log")" target- 'no target work after host failure'
+  done
+}
+
+t_pkgs_icu_four_way_contention_builds_host_once_and_retries_failed_owner() {
+  icu_lock_fixture
+  local phase log
+  for phase in none configure make; do
+    rm -f "$SB/pkg/host-tools/build/icu/.built"
+    if [[ -d "$SB/failed-once" ]]; then rmdir "$SB/failed-once"; fi
+    : > "$SB/icu.log"
+    run_pkgs_support -t 25 "ICU_CFG=$CRS_ROOT/src/pkg/cfg/icu.sh" "ICU_LOG=$SB/icu.log" "ICU_FAIL=$phase" -- "$ICU_LOCK_SETUP"'
+      pids=(); failures=0
+      for i in 1 2 3 4; do ( cfg_custom_build ) & pids+=("$!"); done
+      for pid in "${pids[@]}"; do wait "$pid" || failures=$((failures+1)); done
+      echo "failures=$failures"'
+    assert_rc 0 "$RC" "workers reaped ($OUT)"
+    log="$(cat "$SB/icu.log")"
+    if [[ "$phase" == none ]]; then
+      assert_contains "$OUT" failures=0
+      assert_eq 1 "$(grep -c '^host-configure$' "$SB/icu.log")" 'one configure under contention'
+      assert_eq 4 "$(grep -c '^target-configure ' "$SB/icu.log")" 'all four targets proceed'
+    else
+      assert_contains "$OUT" failures=1 'one failed owner, successful waiters'
+      assert_eq 2 "$(grep -c '^host-configure$' "$SB/icu.log")" 'one retry after failed owner'
+      assert_eq 3 "$(grep -c '^target-configure ' "$SB/icu.log")" 'failed owner never builds target'
+    fi
+    assert_exists "$SB/pkg/host-tools/build/icu/.built" 'successful waiter publishes marker'
+    assert_absent "$SB/pkg/host-tools/build/icu.lock" 'host lock released'
+  done
+}
+
+t_pkgs_generator_write_failure_removes_partial_and_releases_lock() {
+  pkgs_sandbox
+  mkcfg alpha "$CUSTOM_BUILD"
+  # Read the heredoc using the real cat; fail the selected generator after
+  # publishing partial bytes. This exercises both native-file callbacks.
+  local real_cat phase t
+  real_cat="$(command -v cat)"
+  printf '#!%s\nif [[ $# -eq 0 ]]; then\n  data="$(%q)"\n  if [[ "$FAIL_GENERATOR" == meson && "$data" == *"[binaries]"* || "$FAIL_GENERATOR" == cmake && "$data" == *CMAKE_SYSTEM_NAME* ]]; then echo partial; exit 7; fi\n  printf "%%s\\n" "$data"; exit 0\nfi\nexec %q "$@"\n' "$BASH_BIN" "$real_cat" "$real_cat" | write_exe "$SB/failing-cat"
+  ctl_replace cat "$SB/failing-cat"
+  for phase in meson cmake; do
+    pkgs_run "FAIL_GENERATOR=$phase" -- alpha
+    assert_rc 1 "$RC" 'failed generation aborts workers'
+    assert_eq '' "$(cat "$HOOK_LOG")" 'no package work'
+    for t in "${PKG_TRGS[@]}"; do
+      assert_absent "$PREF_DIR/build/pkg/$t/meson-$t.ini"
+      assert_absent "$PREF_DIR/build/pkg/$t/toolchain-$t.cmake"
+      assert_absent "$PREF_DIR/build/pkg/$t.meson.lock"
+      assert_absent "$PREF_DIR/build/pkg/$t.cmake.lock"
+    done
+  done
+}

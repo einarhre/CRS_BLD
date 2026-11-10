@@ -227,7 +227,7 @@ function process_cfg() (
     if [[ ! -f "$CROSS_FILE" ]] || \
        [[ "$CROSS_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]]
     then
-      cat > "$CROSS_FILE" <<EOD
+      if ! cat > "$CROSS_FILE" <<EOD
 [binaries]
 c = '$CC'
 cpp = '$CXX'
@@ -247,11 +247,15 @@ endian = 'little'
 [properties]
 needs_exe_wrapper = true
 EOD
+      then
+        rm -f -- "$CROSS_FILE"
+        return 1
+      fi
     fi
   }
   local -r MESON_CROSS_FILE="$PKG_BLD_DIR/$TRG/meson-$TRG.ini"
   local -r MESON_CROSS_LOCK="$PKG_BLD_DIR/$TRG.meson.lock"
-  # Generate Meson cross file atomically to avoid concurrent writers.
+  # Serialize Meson cross-file generation. Failed writes are removed.
   lock_run "$MESON_CROSS_LOCK" \
     create_meson_cross_file "$MESON_CROSS_FILE"
   unset cpu
@@ -266,7 +270,7 @@ EOD
     if [[ ! -f "$TOOLCHAIN_FILE" ]] || \
        [[ "$TOOLCHAIN_FILE" -ot "$INSTALL_DIRECTORY/cross/$TRG" ]]
     then
-      cat > "$TOOLCHAIN_FILE" <<EOD
+      if ! cat > "$TOOLCHAIN_FILE" <<EOD
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR $cpu_family)
 
@@ -285,11 +289,15 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 EOD
+      then
+        rm -f -- "$TOOLCHAIN_FILE"
+        return 1
+      fi
     fi
   }
   local -r CMAKE_TOOLCHAIN_FILE="$PKG_BLD_DIR/$TRG/toolchain-$TRG.cmake"
   local -r CMAKE_TOOLCHAIN_LOCK="$PKG_BLD_DIR/$TRG.cmake.lock"
-  # Generate Cmake toolchain file atomically to avoid concurrent writers.
+  # Serialize CMake toolchain generation. Failed writes are removed.
   lock_run "$CMAKE_TOOLCHAIN_LOCK" \
     create_cmake_toolchain_file "$CMAKE_TOOLCHAIN_FILE"
   if [[ -n "${DELETE_CMAKE_CONF:-}" ]] && [[ "$DELETE_CMAKE_CONF" -ne 0 ]]
