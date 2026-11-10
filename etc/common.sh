@@ -55,29 +55,3 @@ function comp_fail() {
   echo
   exit 1
 }
-
-# Diagnostic routines
-check_pc_vs_files() {
-  local prefix="$1"
-  local pc lib flag name
-
-  echo "== $prefix =="
-
-  find "$prefix/lib/pkgconfig" "$prefix/lib64/pkgconfig" "$prefix/share/pkgconfig" \
-    -name '*.pc' -type f 2>/dev/null |
-  while IFS= read -r pc
-  do
-    grep -E '^(Libs|Libs.private):' "$pc" |
-    grep -oE -- '-l[^ ]+' |
-    sed 's/^-l//' |
-    while IFS= read -r name
-    do
-      if ! find "$prefix/lib" "$prefix/lib64" \
-        \( -name "lib${name}.a" -o -name "lib${name}.dll.a" \) \
-        -type f 2>/dev/null | grep -q .
-      then
-        echo "MISSING: $pc -> -l$name"
-      fi
-    done
-  done
-}

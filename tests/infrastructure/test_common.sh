@@ -237,24 +237,9 @@ t_common_darwin_homebrew_path_precedes_mock_tools() {
   assert_eq 7 "$OUT" 'GNU nproc from the Homebrew prefix is used for the NCRS default'
 }
 
-t_common_legacy_check_pc_vs_files_is_defined() {
-  # common.sh still carries an older one-argument check_pc_vs_files that
-  # etc/diagnostics.sh later overrides with a three-argument version.
+t_common_has_only_shared_functions() {
   sandbox_new
-  local p="$SB/prefix"
-  mkdir -p "$p/lib/pkgconfig" "$p/lib64"
-  printf 'Libs: -lgone -lhere\n' > "$p/lib/pkgconfig/a.pc"
-  : > "$p/lib/libhere.a"
-  run_common -- 'declare -F check_pc_vs_files >/dev/null && echo defined; check_pc_vs_files "$1"' "$p"
-  # It reports the right library but still exits 1 (status of the last pipeline).
-  assert_rc 1 "$RC" 'legacy checker exit status'
-  assert_eq "defined
-== $p ==
-MISSING: $p/lib/pkgconfig/a.pc -> -lgone" "$OUT" 'legacy checker output with both lib dirs present'
-  # Quirk: with lib64 absent, find exits nonzero and pipefail makes every
-  # library look missing.
-  rmdir "$p/lib64"
-  run_common -- 'check_pc_vs_files "$1"' "$p"
-  assert_rc 1 "$RC" 'legacy checker without lib64'
-  assert_contains "$OUT" "a.pc -> -lhere" 'present library falsely reported'
+  run_common -- 'declare -F | sed "s/declare -f //"'
+  assert_rc 0 "$RC" 'source common'
+  assert_eq comp_fail "$OUT" 'no package helpers or legacy checker'
 }

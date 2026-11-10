@@ -229,7 +229,7 @@ t_pkgs_support_source_only_adds_five_definitions() {
     test ! -s "$SB/source.out"
     declare -F | sed "s/declare -f //" | sort'
   assert_rc 0 "$RC" 'definitions-only source'
-  assert_eq $'check_pc_vs_files\ncomp_fail\nempty_trash_bin\nlock_acquire\nlock_release\nlock_run\nput_into_trash_bin' "$OUT" 'exact exported functions'
+  assert_eq $'comp_fail\nempty_trash_bin\nlock_acquire\nlock_release\nlock_run\nput_into_trash_bin' "$OUT" 'exact exported functions'
 }
 
 t_pkgs_support_compiler_and_diagnostics_source_graph() {

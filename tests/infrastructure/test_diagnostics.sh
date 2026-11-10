@@ -428,3 +428,14 @@ t_diag_is_read_only_and_leaves_no_files_or_dirs() {
   assert_absent "$SB/pref" 'PREF not created'
   assert_eq '' "$(ls -A "$SB/tmp")" 'no temporary files'
 }
+
+t_diag_checker_is_owned_by_diagnostics_and_requires_three_arguments() {
+  diag_sandbox
+  run_ctl NCRS=4 -- "$BASH_BIN" --noprofile --norc -c '
+    source "$DIAG_SH" "$SB/missing" >/dev/null
+    declare -F check_pc_vs_files >/dev/null
+    check_pc_vs_files "$SB/missing" && exit 9
+    test "$?" -eq 1
+    check_pc_vs_files "$SB/missing" target kind'
+  assert_rc 0 "$RC" 'diagnostics owns a three-argument checker'
+}
