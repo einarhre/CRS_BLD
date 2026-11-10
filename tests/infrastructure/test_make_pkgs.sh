@@ -291,11 +291,11 @@ t_pkgs_environment_exported_to_hooks() {
   mkdir "$SB/env"
   pkgs_run "ENV_DIR=$SB/env" -- alpha
   assert_rc 0 "$RC" "status ($OUT)"
-  local t="$TRG64" k=shared f="$SB/env/$TRG64-shared" i="$SB/pref/install/pkg/$TRG64/shared"
+  local sp=" " t="$TRG64" k=shared f="$SB/env/$TRG64-shared" i="$SB/pref/install/pkg/$TRG64/shared"
   assert_eq "shared $t
 PATH0=$SB/pref/install/cross/$t/bin
 CC=$t-gcc CXX=$t-g++ AR=$t-ar RANLIB=$t-ranlib STRIP=$t-strip WINDRES=$t-windres
-CPPFLAGS=-I$i/include 
+CPPFLAGS=-I$i/include${sp}
 CFLAGS=-I$i/include -O2 -g
 LDFLAGS=-L$i/lib -L$i/lib64 -Wl,-x
 LIBS=-lz
