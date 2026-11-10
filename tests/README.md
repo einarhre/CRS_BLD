@@ -13,9 +13,9 @@ shared Bash prerequisite is accepted, all four are attempted in that order even
 when an earlier suite fails. If Bash is missing or too old, all four dependent
 phases are explicitly reported as `not run`, without numeric exit statuses;
 the Python fixtures also require that Bash. The overall status is zero only
-when all four succeed. The infrastructure runner and each of its three
-components (`t_common_*`, `t_diag_*`, `t_pkgs_*`) must exist and contribute at
-least one hard test, otherwise the phase fails. Missing mandatory runners or interpreters, failed
+when all four succeed. The infrastructure runner and each of its four
+components (`t_common_*`, `t_diag_*`, `t_harness_*`, `t_pkgs_*`) must exist and
+contribute at least one hard test, otherwise the phase fails. Missing mandatory runners or interpreters, failed
 discovery and empty suites are errors, not skips. Shell discovery must include
 at least one hard (`t_*`) test. The dispatcher takes no filtering arguments.
 
@@ -77,30 +77,74 @@ git diff --check
 
 `tests/infrastructure/` characterizes the *current* behavior of `etc/common.sh`
 (`test_common.sh`), `etc/diagnostics.sh` (`test_diagnostics.sh`) and
-`make_pkgs.sh` (`test_make_pkgs.sh`). They assert what the scripts do today,
-including quirks, not what a corrected version should do; a deliberate behavior
-change must update the matching test.
+`make_pkgs.sh` (`test_make_pkgs.sh`); `test_harness.sh` tests the runner and
+`lib.sh` themselves. The characterization tests assert what the scripts do
+today, including quirks, not what a corrected version should do; a deliberate
+behavior change must update the matching test.
 
 ```sh
-tests/infrastructure/run-infrastructure-tests.sh        # all
-tests/infrastructure/run-infrastructure-tests.sh -l     # list
+tests/infrastructure/run-infrastructure-tests.sh        # all test_*.sh files
+tests/infrastructure/run-infrastructure-tests.sh -l     # list (fails on load errors)
 tests/infrastructure/run-infrastructure-tests.sh -k '_lock_|_ncrs_'
+tests/infrastructure/run-infrastructure-tests.sh tests/infrastructure/test_common.sh
 ```
 
-Every test runs in a fresh `bash` (common.sh must not be sourced twice) under a
-hard timeout (`INFRA_TEST_TIMEOUT`, default 120 s) in a disposable sandbox under
-`TMPDIR`. `t_*` tests gate the exit status. `k_*` tests demonstrate known
-defects (lock leak when a wrapped command fails under `set -e`, endless wait on
-an uncreatable lock path, a leaked per-configuration temp file after
-`make_pkgs.sh` worker failures); they are non-gating and print
-`KNOWN-DEFECT-REPRODUCED` or `KNOWN-DEFECT-NOT-REPRODUCED`. Status 77 means skip
-(`make_pkgs.sh` tests need Bash 5.1 for `wait -n -p`).
+Discovery is automatic: without file arguments every `test_*.sh` in the
+directory is loaded, and the four files named above are mandatory. With file
+arguments only those files are loaded. A file fails discovery (and the run) if
+it is missing or empty, fails `bash -n`, returns nonzero or writes to stderr
+while being sourced, exceeds `INFRA_DISCOVERY_TIMEOUT` (default 30 s), defines
+no `t_*` test, or redefines another file's test.
 
-The `make_pkgs.sh` tests use tiny synthetic configurations under a temporary
-`PREF`; make, meson, ninja, cmake, the configure script and the glib helpers are
-command spies, and compilers, downloaders, git, patch and package installers are
-"forbidden" spies that fail the test if called. Homebrew/macOS handling is
-exercised with a mocked `uname`/`brew` on Linux only; native macOS is not tested.
+Outcomes: `t_*` tests gate (`PASS`, `FAIL`, or `SKIP` on exit 77). `k_*` tests
+demonstrate known defects (lock leak when a wrapped command fails under
+`set -e`, endless wait on an uncreatable lock path, a leaked per-configuration
+temp file after `make_pkgs.sh` worker failures): `KNOWN-DEFECT-REPRODUCED`
+(exit 0), `-NOT-REPRODUCED` (exit 1) and `-SKIPPED` (exit 77, prerequisite
+unavailable) are non-gating; `-ERROR` (timeout, signal, harness/load error or
+any other status) gates. The package tests skip on Bash older than 5.1
+(`wait -n -p`).
+
+Supervision and cleanup: each test and each discovery step runs in a fresh
+`bash --noprofile --norc` with nounset, in its own process group, under a
+watchdog (`INFRA_TEST_TIMEOUT`, default 120 s; TERM, then KILL after
+`INFRA_KILL_GRACE`, default 5 s). When a test ends for any reason - pass,
+failure, timeout, kill - the runner signals what remains of that process group
+and of the GNU `timeout` groups the test registered, waits for them to exit, and
+then removes the per-test directory it created under its own run directory in
+`TMPDIR`. INT, TERM and HUP to the runner do the same before it exits. Only
+process groups created for the run are signalled; there is no name-based
+killing. A process that deliberately starts its own session or process group
+without registering it, or that clears its environment and re-parents itself,
+is outside this guarantee.
+
+Sandboxes: `sandbox_new` aborts the test (exit 90, `HARNESS-ERROR`) if its
+directory cannot be allocated, resolved or verified as an owned, non-symlink
+directory, before the body runs; `SB` stays unset until then and test processes
+run with nounset. Recursive removal is restricted to owned directories inside
+the run directory.
+
+Command isolation: the scripts under test run only through `run_ctl`
+(`env -i`, an explicit variable list, `HOME` inside the sandbox, no Bash startup
+files) with `PATH` limited to symlinks to an allowlist of ordinary utilities
+(coreutils, find, grep, sed, tar, gzip, ...) plus spies. There is no fallback to
+the host `PATH`. `uname` is pinned to Linux unless a test asks for a simulated
+Darwin; `pkg-config` is a stub. make, meson, ninja, cmake, the configure script
+and the glib helpers are command spies that record `%q`-encoded argv with an
+argument count, and `tar` is a logging wrapper around the real tar used on
+synthetic archives. Compilers, linkers, assemblers, binutils, downloaders, VCS
+clients, package managers, `patch`, `install` and `sudo` are either absent or
+"forbidden" spies; using one fails the test. Commands named by absolute path
+cannot be intercepted this way, and the scripts under test do not use any.
+
+Paths: tests pass sandbox paths as arguments, never by interpolation into
+script text. `test_harness.sh` runs representative tests under TMPDIR paths
+containing spaces, apostrophes, tabs and newlines. Diagnostics tests skip under
+a newline (a `.pc` variable cannot hold one); a colon in TMPDIR is unsupported
+because the sandbox directories are placed on `PATH`.
+
+Homebrew/macOS handling is exercised with a mocked `uname`/`brew` on Linux only;
+native macOS is not tested.
 
 ## Language policy and prerequisites
 
