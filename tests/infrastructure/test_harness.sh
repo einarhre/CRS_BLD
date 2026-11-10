@@ -423,3 +423,195 @@ t_harness_real_tests_pass_under_unusual_tmpdir_paths() {
   assert_contains "$OUT" 'sandbox path contains a newline'
   assert_eq '' "$(ls -A "$odd2")" 'run directory removed (newline path)'
 }
+
+# ------------------------------------- final verification findings N1 - N5
+
+# _probe_suite: one passing and one failing test in test_common.sh
+_probe_suite() {
+  suite_new
+  printf 't_common_probe_a() { :; }\nt_common_probe_b() { fail probe_b; }\n' > "$SUITE/test_common.sh"
+}
+
+t_harness_n1_failing_sort_fails_discovery() {
+  # Review N1: a sort that drops the failing test, emits the rest and exits
+  # 42 must not produce a green, incomplete suite.
+  _probe_suite
+  local real_sort; real_sort="$(command -v sort)"
+  mkdir "$SB/sortbin"
+  printf '#!/bin/sh\n%s "$@" | grep -v "^t_common_probe_b$"\nexit 42\n' "$real_sort" | write_exe "$SB/sortbin/sort"
+  run_suite "PATH=$SB/sortbin:$PATH" --
+  assert_rc 1 "$RC" 'failed sort must fail the suite'
+  assert_contains "$OUT" 'sort failed with status 42'
+  assert_not_contains "$OUT" 'PASS  t_common_probe_a' 'no test runs from a partial list'
+  run_suite "PATH=$SB/sortbin:$PATH" -- -l
+  assert_rc 1 "$RC" 'listing fails too'
+  # A sort that "succeeds" but drops a name is caught by the count check.
+  printf '#!/bin/sh\n%s "$@" | grep -v "^t_common_probe_b$"\nexit 0\n' "$real_sort" | write_exe "$SB/sortbin/sort"
+  run_suite "PATH=$SB/sortbin:$PATH" --
+  assert_rc 1 "$RC" 'silently lossy sort must fail the suite'
+  assert_contains "$OUT" 'sort lost names'
+  assert_run_dir_removed
+}
+
+t_harness_n1_slow_sort_is_bounded_by_discovery_deadline() {
+  _probe_suite
+  local real_sort; real_sort="$(command -v sort)"
+  mkdir "$SB/sortbin"
+  printf '#!/bin/sh\necho $$ > "$PIDDIR/sort"\nsleep 30\nexec %s "$@"\n' "$real_sort" | write_exe "$SB/sortbin/sort"
+  local t0=$SECONDS
+  run_suite "PATH=$SB/sortbin:$PATH" INFRA_DISCOVERY_TIMEOUT=2 INFRA_KILL_GRACE=1 --
+  assert_rc 1 "$RC" 'stuck sort must fail discovery'
+  assert_contains "$OUT" 'exceeded 2s'
+  (( SECONDS - t0 < 25 )) || fail "sorting was not bounded ($((SECONDS - t0)) s)"
+  assert_pids_gone sort
+  assert_run_dir_removed
+}
+
+t_harness_n2_safe_rm_tree_rejects_intermediate_symlink() {
+  # Review N2, exact layout: guard-root/alias -> guard-outside, and
+  # safe_rm_tree guard-root guard-root/alias/victim must not delete anything.
+  sandbox_new
+  local root="$SB/review/guard-root" outside="$SB/review/guard-outside"
+  mkdir -p "$root" "$outside/victim"
+  : > "$outside/victim/sentinel"
+  ln -s "$outside" "$root/alias"
+  safe_rm_tree "$root" "$root/alias/victim" 2>"$SB/err" && fail 'intermediate symlink accepted'
+  assert_exists "$outside/victim/sentinel" 'sentinel outside the root survives'
+  assert_contains "$(cat "$SB/err")" 'symlinked or unresolvable ancestor'
+  # deeper chains and a symlinked root are rejected as well
+  mkdir -p "$outside/victim/deeper"
+  safe_rm_tree "$root" "$root/alias/victim/deeper" 2>/dev/null && fail 'deeper path through symlink accepted'
+  ln -s guard-root "$SB/review/root-link"
+  mkdir -p "$root/inside"
+  safe_rm_tree "$SB/review/root-link" "$SB/review/root-link/inside" 2>/dev/null && fail 'symlinked root accepted'
+  assert_exists "$outside/victim/deeper" 'outside tree intact'
+  assert_exists "$root/inside" 'nothing removed through a symlinked root'
+  # an ordinary contained path is still removed
+  safe_rm_tree "$root" "$root/inside" || fail 'refused a physically contained path'
+  assert_absent "$root/inside"
+}
+
+t_harness_n3_colon_tmpdir_is_rejected_before_any_command() {
+  # Review N3: a colon in TMPDIR would split the controlled PATH and expose
+  # an outside directory.  A harmless recording "clang" waits there.
+  suite_new
+  mkdir -p "$SB/colon" "$SB/colon:tmp"
+  printf '#!/bin/sh\necho "clang $*" >> "%s/escape.log"\n' "$SB" | write_exe "$SB/colon/clang"
+  cat > "$SUITE/test_common.sh" <<'EOF'
+t_common_calls_clang() {
+  sandbox_new
+  run_ctl -- "$BASH_BIN" --noprofile --norc -c 'clang --version'
+}
+EOF
+  run_suite "TMPDIR=$SB/colon:tmp" --
+  assert_rc 2 "$RC" 'runner must refuse the TMPDIR'
+  assert_contains "$OUT" "unsupported TMPDIR (contains ':')"
+  assert_not_contains "$OUT" PASS
+  assert_absent "$SB/escape.log" 'outside command never reached'
+  assert_eq '' "$(ls -A "$SB/colon:tmp")" 'nothing created in the rejected TMPDIR'
+  # lib.sh refuses it too, without the runner (fallback allocation) ...
+  _fresh_lib_bash 'sandbox_new; touch "$MARK"; run_ctl -- "$BASH_BIN" -c "clang --version"' "TMPDIR=$SB/colon:tmp"
+  assert_rc 90 "$RC" 'fallback sandbox must refuse'
+  assert_contains "$OUT" "HARNESS-ERROR: unsupported TMPDIR (contains ':')"
+  assert_absent "$SB/body-ran"; assert_absent "$SB/escape.log"
+  assert_eq '' "$(ls -A "$SB/colon:tmp")" 'nothing created by the fallback either'
+  # ... and a runner-supplied root containing a colon
+  mkdir "$SB/colon:root"
+  _fresh_lib_bash 'sandbox_new; touch "$MARK"' "INFRA_TEST_ROOT=$SB/colon:root"
+  assert_rc 90 "$RC" 'colon root must be refused'
+  assert_contains "$OUT" "unsupported sandbox path (contains ':')"
+  assert_absent "$SB/body-ran"
+  assert_eq '' "$(ls -A "$SB/colon:root")" 'no sandbox created inside the colon root'
+}
+
+# _rm_wrapper: rm that fails (88) for arguments whose basename matches
+# RM_FAIL_BASENAME, and otherwise runs the real rm.
+_rm_wrapper() {
+  local real_rm; real_rm="$(command -v rm)"
+  mkdir -p "$SB/rmbin"
+  cat > "$SB/rmbin/rm" <<EOF
+#!$BASH_BIN
+for a; do
+  case "\${a##*/}" in \$RM_FAIL_BASENAME) echo "INJECTED CLEANUP FAILURE: \$a" >&2; exit 88 ;; esac
+done
+exec $(printf '%q' "$real_rm") "\$@"
+EOF
+  chmod +x "$SB/rmbin/rm"
+}
+
+t_harness_n4_final_cleanup_failure_is_never_green() {
+  suite_new
+  _rm_wrapper
+  # passing run whose final run-directory removal fails -> exit 3
+  run_suite "PATH=$SB/rmbin:$PATH" 'RM_FAIL_BASENAME=crs-infra-run.*' --
+  assert_rc 3 "$RC" 'cleanup failure must turn success into failure'
+  assert_contains "$OUT" 'INJECTED CLEANUP FAILURE'
+  assert_contains "$OUT" 'cleanup failed: run directory remains'
+  run_suite "PATH=$SB/rmbin:$PATH" 'RM_FAIL_BASENAME=crs-infra-run.*' -- -l
+  assert_rc 3 "$RC" 'listing with failed cleanup is not green'
+  # an existing failure status is preserved, not replaced
+  printf 't_common_ok() { :; }\nt_common_bad() { fail bad; }\n' > "$SUITE/test_common.sh"
+  run_suite "PATH=$SB/rmbin:$PATH" 'RM_FAIL_BASENAME=crs-infra-run.*' --
+  assert_rc 1 "$RC" 'original failure status kept'
+  assert_contains "$OUT" 'FAIL  t_common_bad'
+  assert_contains "$OUT" 'cleanup failed: run directory remains'
+  # discovery-file cleanup failures also count
+  printf 't_common_ok() { :; }\n' > "$SUITE/test_common.sh"
+  run_suite "PATH=$SB/rmbin:$PATH" 'RM_FAIL_BASENAME=*.discovery' --
+  assert_rc 3 "$RC" 'discovery cleanup failure is not green'
+  # leftovers are inside this sandbox and are removed with it by the runner
+}
+
+t_harness_n5_newline_only_source_output_fails_discovery() {
+  suite_new
+  local where
+  for where in '' '>&2'; do
+    printf 't_common_ok() { :; }\nprintf "\\n" %s\n' "$where" > "$SUITE/test_common.sh"
+    run_suite --
+    assert_rc 1 "$RC" "newline-only output [$where] must fail"
+    assert_contains "$OUT" "loading $SUITE/test_common.sh failed: unexpected output (1 byte(s))"
+    assert_not_contains "$OUT" 'PASS  t_common_ok'
+  done
+  assert_run_dir_removed
+}
+
+t_harness_n1_every_discovered_test_runs_despite_later_sort_misbehavior() {
+  # Sorting happens once per file, inside the supervised discovery step.  A
+  # sort that behaves on its first call for an input but drops the failing
+  # test (exit 42) on any later call must not change the outcome: an
+  # unchecked second sort outside discovery would silently lose t_common_probe_b.
+  _probe_suite
+  local real_sort; real_sort="$(command -v sort)"
+  mkdir "$SB/sortbin"
+  cat > "$SB/sortbin/sort" <<EOF
+#!/bin/sh
+for last; do :; done
+key=\$(printf '%s' "\$last" | tr '/ ' '__')
+if [ -e "\$PIDDIR/sort.\$key" ]; then
+  $real_sort "\$@" | grep -v '^t_common_probe_b\$'; exit 42
+fi
+: > "\$PIDDIR/sort.\$key"
+exec $real_sort "\$@"
+EOF
+  chmod +x "$SB/sortbin/sort"
+  run_suite "PATH=$SB/sortbin:$PATH" --
+  assert_rc 1 "$RC" 'the failing probe must still gate'
+  assert_contains "$OUT" 'PASS  t_common_probe_a'
+  assert_contains "$OUT" 'FAIL  t_common_probe_b' 'no discovered test may be dropped'
+}
+
+t_harness_runner_cleanup_does_not_follow_a_swapped_test_root() {
+  # A test replaces its own per-test directory with a symlink to an outside
+  # directory.  The runner removes the symlink only, never the target.
+  suite_new
+  mkdir -p "$SB/outside/keep"; : > "$SB/outside/keep/sentinel"
+  cat > "$SUITE/test_common.sh" <<'EOF'
+t_common_swaps_root() {
+  rm -rf -- "${INFRA_TEST_ROOT:?}" && ln -s -- "$OUTSIDE" "$INFRA_TEST_ROOT"
+}
+EOF
+  run_suite "OUTSIDE=$SB/outside" -- "$SUITE/test_common.sh"
+  assert_rc 0 "$RC" "swap test ($OUT)"
+  assert_exists "$SB/outside/keep/sentinel" 'outside target untouched'
+  assert_run_dir_removed
+}

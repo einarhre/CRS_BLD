@@ -70,20 +70,35 @@ owned_dir() {
   [[ -n "${1:-}" && "$1" == /* && "$1" != / && -d "$1" && ! -L "$1" && -O "$1" ]]
 }
 
-# Remove a tree only if it is an owned directory strictly inside an owned root.
+# Physical path of an existing directory, or failure.  A name ending in a
+# newline cannot round-trip through $(...) and is therefore rejected (the
+# caller compares the result with the spelling it was given).
+_phys_dir() { local r; r="$(cd -P -- "$1" 2>/dev/null && pwd -P)" || return 1; printf '%s' "$r"; }
+
+# Remove a tree only if it is physically contained in ROOT.  Rule (simple and
+# auditable, ambiguous paths are rejected rather than normalized):
+#   * ROOT is an owned, non-symlink directory equal to its own physical path;
+#   * PATH is spelled ROOT/..., without empty, "." or ".." components;
+#   * PATH's parent directory resolves physically to exactly its spelling, so
+#     no component between ROOT and PATH is a symlink;
+#   * PATH itself is an owned, non-symlink directory.
 #   safe_rm_tree ROOT PATH
 safe_rm_tree() {
-  local root="${1:-}" p="${2:-}"
+  local root="${1:-}" p="${2:-}" parent
   owned_dir "$root" || { echo "refusing cleanup: bad root [$root]" >&2; return 1; }
+  [[ "$(_phys_dir "$root")" == "$root" ]] || { echo "refusing cleanup: root [$root] is not a physical path" >&2; return 1; }
   [[ "$p" == "$root"/?* ]] || { echo "refusing cleanup: [$p] not inside [$root]" >&2; return 1; }
-  [[ "/$p/" != */../* && "/$p/" != */./* ]] || { echo "refusing cleanup: [$p] has dot components" >&2; return 1; }
+  [[ "$p/" != *//* && "$p/" != */./* && "$p/" != */../* ]] || { echo "refusing cleanup: [$p] has empty or dot components" >&2; return 1; }
   [[ -e "$p" || -L "$p" ]] || return 0
+  parent="${p%/*}"
+  [[ "$(_phys_dir "$parent")" == "$parent" ]] || { echo "refusing cleanup: [$p] has a symlinked or unresolvable ancestor" >&2; return 1; }
   owned_dir "$p" || { echo "refusing cleanup: [$p] is not an owned directory" >&2; return 1; }
   rm -rf -- "$p"
+  [[ ! -e "$p" && ! -L "$p" ]] || { echo "cleanup failed: [$p]" >&2; return 1; }
 }
 
 _infra_exit() {
-  local j
+  local rc=$? j
   j="$(jobs -p)"
   # Direct background children only; the runner sweeps the whole group.
   [[ -z "$j" ]] || kill $j 2>/dev/null
@@ -94,7 +109,12 @@ _infra_exit() {
     else
       echo "refusing cleanup of [$INFRA_OWN_ROOT]" >&2
     fi
+    if [[ -e "$INFRA_OWN_ROOT" || -L "$INFRA_OWN_ROOT" ]]; then
+      echo "HARNESS-ERROR: sandbox cleanup failed: [$INFRA_OWN_ROOT]" >&2
+      [[ "$rc" -ne 0 ]] || rc=90
+    fi
   fi
+  exit "$rc"
 }
 
 # Allocate the sandbox SB (physical path), TMPDIR=$SB/tmp and the controlled
@@ -106,15 +126,25 @@ sandbox_new() {
   if [[ -n "${INFRA_TEST_ROOT:-}" ]]; then
     root="$INFRA_TEST_ROOT"
   else
+    case "${TMPDIR:-/tmp}" in
+      *:*) harness_abort "unsupported TMPDIR (contains ':'): [$TMPDIR]" ;;
+    esac
     root="$(mktemp -d "${TMPDIR:-/tmp}/crs-infra.XXXXXX")" || harness_abort 'mktemp -d failed'
     [[ -n "$root" ]] || harness_abort 'mktemp -d returned an empty path'
-    INFRA_OWN_ROOT="$root"
+    # Register for removal on exit only a directory that is really ours.
+    if [[ "${root##*/}" == crs-infra.?* ]] && owned_dir "$root"; then
+      INFRA_OWN_ROOT="$root"
+      trap _infra_exit EXIT
+    fi
   fi
   owned_dir "$root" || harness_abort "sandbox root is not an owned directory: [$root]"
   phys="$(cd -P -- "$root" && pwd -P)" || harness_abort "cannot resolve sandbox root [$root]"
   owned_dir "$phys" || harness_abort "resolved sandbox root is invalid: [$phys]"
   [[ -n "${INFRA_OWN_ROOT:-}" ]] && INFRA_OWN_ROOT="$phys"
   trap _infra_exit EXIT
+  # A colon would split the controlled PATH ($SB/.ctl/bin) into two search
+  # directories, one of them outside the sandbox: refuse before building it.
+  [[ "$phys" != *:* ]] || harness_abort "unsupported sandbox path (contains ':'): [$phys]"
   mkdir -- "$phys/sb" || harness_abort "cannot create $phys/sb"
   owned_dir "$phys/sb" || harness_abort "sandbox is not an owned directory"
   SB="$phys/sb"

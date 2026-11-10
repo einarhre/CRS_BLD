@@ -74,6 +74,11 @@ fi
 [[ -f "$here/lib.sh" && -s "$here/lib.sh" ]] || { echo "ERROR: missing $here/lib.sh" >&2; exit 2; }
 
 # ---------------------------------------------------------------- run root
+# A colon would split the controlled PATH built from sandbox paths (lib.sh),
+# creating an unintended command search directory: refuse it up front.
+case "${TMPDIR:-/tmp}" in
+  *:*) echo "ERROR: unsupported TMPDIR (contains ':'): [${TMPDIR}]" >&2; exit 2 ;;
+esac
 run_root="$(mktemp -d "${TMPDIR:-/tmp}/crs-infra-run.XXXXXX")" || {
   echo 'ERROR: cannot allocate the run directory (mktemp -d failed)' >&2; exit 2; }
 if [[ -z "$run_root" || "$run_root" != /* || ! -d "$run_root" || -L "$run_root" || ! -O "$run_root" ]]; then
@@ -82,18 +87,29 @@ fi
 run_root="$(cd -P -- "$run_root" && pwd -P)" || { echo 'ERROR: cannot resolve run directory' >&2; exit 2; }
 [[ "${run_root##*/}" == crs-infra-run.?* && -O "$run_root" && ! -L "$run_root" ]] || {
   echo "ERROR: unexpected run directory: [$run_root]" >&2; exit 2; }
+if [[ "$run_root" == *:* ]]; then
+  rmdir -- "$run_root"
+  echo "ERROR: unsupported run directory path (contains ':'): [$run_root]" >&2; exit 2
+fi
 
 cur_pgid=''; wd_pid=''; cur_dir=''
-remove_in_root() {  # remove a path created by this runner inside run_root
-  local p="$1"
-  [[ "$p" == "$run_root"/?* && "$p" != *"/../"* ]] || { echo "refusing cleanup of [$p]" >&2; return 1; }
+cleanup_errors=0
+# Remove a path this runner created.  Only DIRECT children of the physical
+# run root are accepted, so no intermediate component can be a symlink.
+remove_in_root() {
+  local p="$1" name="${1##*/}"
+  [[ "$p" == "$run_root/$name" && -n "$name" && "$name" != . && "$name" != .. ]] || {
+    echo "refusing cleanup of [$p]" >&2; cleanup_errors=$((cleanup_errors + 1)); return 1; }
   [[ -e "$p" || -L "$p" ]] || return 0
   if [[ -d "$p" && ! -L "$p" ]]; then
-    [[ -O "$p" ]] || { echo "refusing cleanup of foreign [$p]" >&2; return 1; }
+    [[ -O "$p" ]] || { echo "refusing cleanup of foreign [$p]" >&2; cleanup_errors=$((cleanup_errors + 1)); return 1; }
     chmod -R u+rwx -- "$p" 2>/dev/null
     rm -rf -- "$p"
   else
     rm -f -- "$p"
+  fi
+  if [[ -e "$p" || -L "$p" ]]; then
+    echo "ERROR: cleanup failed: [$p]" >&2; cleanup_errors=$((cleanup_errors + 1)); return 1
   fi
 }
 group_alive() { kill -0 -- "-$1" 2>/dev/null; }
@@ -125,23 +141,38 @@ reap_current() {  # sweep the current test's group and its registered groups
   fi
   cur_pgid=''
 }
+# Mandatory cleanup; returns 1 if anything could not be reaped or removed.
 cleanup_run() {
   reap_current
+  [[ "$reap_failed" -eq 0 ]] || { echo 'ERROR: processes could not be reaped' >&2; cleanup_errors=$((cleanup_errors + 1)); }
   if [[ -n "${KEEP_SANDBOX:-}" ]]; then
     echo "kept run directory: $run_root"
   else
     chmod -R u+rwx -- "$run_root" 2>/dev/null
     [[ "${run_root##*/}" == crs-infra-run.?* ]] && rm -rf -- "$run_root"
+    if [[ -e "$run_root" || -L "$run_root" ]]; then
+      echo "ERROR: cleanup failed: run directory remains: [$run_root]" >&2
+      cleanup_errors=$((cleanup_errors + 1))
+    fi
   fi
+  [[ "$cleanup_errors" -eq 0 ]]
+}
+# Exit status: an existing failure status is kept; a cleanup failure turns an
+# otherwise successful run (or listing) into exit 3.
+on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM HUP
+  if ! cleanup_run && [[ "$rc" -eq 0 ]]; then rc=3; fi
+  exit "$rc"
 }
 on_signal() {
   trap - INT TERM HUP
   echo "INTERRUPTED: stopping current test and cleaning up" >&2
-  cleanup_run
   trap - EXIT
+  cleanup_run
   exit "$1"
 }
-trap cleanup_run EXIT
+trap on_exit EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
@@ -184,33 +215,46 @@ for f in "${files[@]}"; do
   if [[ ! -f "$f" || ! -r "$f" || ! -s "$f" ]]; then
     err "test file missing, empty or unreadable: $f"; continue
   fi
-  if ! syn="$("$bash_bin" -n -- "$f" 2>&1)"; then
-    err "syntax error in $f:"$'\n'"$syn"; continue
-  fi
   new_dir
   d="$NEW_DIR"
+  # The whole discovery step - syntax check, sourcing, listing and sorting -
+  # runs inside one supervised, deadline-bounded process.  Its stdout/stderr
+  # (file $d.discovery) must stay EMPTY: diagnostics are reported through
+  # fd 4 ($d.diag); the sorted names go to $d.names.
   supervise "$DISCOVERY_TIMEOUT" "$d" "$d.discovery" -- \
     "$bash_bin" --noprofile --norc -c '
-      exec 3>"$4"
-      source "$1" || { echo "lib.sh returned $?" >&2; exit 90; }
+      exec 4>"$5"
+      "$BASH" -n -- "$2" 2>&4 || { echo "syntax error in $2" >&4; exit 89; }
+      source "$1" || { echo "lib.sh returned $?" >&4; exit 90; }
       source "$2"; rc=$?
-      [[ $rc -eq 0 ]] || { echo "sourcing returned $rc" >&2; exit 91; }
-      compgen -A function >&3
-      exit 0' _ "$here/lib.sh" "$f" "$d" "$d.names"
-  out="$(< "$d.discovery")"
+      [[ $rc -eq 0 ]] || { echo "sourcing returned $rc" >&4; exit 91; }
+      compgen -A function > "$3.raw" || { echo "compgen failed" >&4; exit 93; }
+      LC_ALL=C sort -- "$3.raw" > "$4" || { echo "sort failed with status $?" >&4; exit 93; }
+      mapfile -t raw < "$3.raw"; mapfile -t sorted < "$4"
+      (( ${#raw[@]} == ${#sorted[@]} )) || { echo "sort lost names (${#raw[@]} -> ${#sorted[@]})" >&4; exit 94; }
+      exit 0' _ "$here/lib.sh" "$f" "$d/names" "$d.names" "$d.diag"
+  diag="$(cat -- "$d.diag" 2>/dev/null)"
   if [[ "$SUP_TIMED_OUT" -eq 1 ]]; then
-    err "discovery of $f exceeded ${DISCOVERY_TIMEOUT}s"; remove_in_root "$d"; continue
-  fi
-  if [[ "$SUP_RC" -ne 0 || -n "$out" || "$reap_failed" -ne 0 ]]; then
-    err "loading $f failed (exit $SUP_RC)${out:+:$'\n'$out}"; remove_in_root "$d"; continue
+    err "discovery of $f exceeded ${DISCOVERY_TIMEOUT}s"
+  elif [[ "$SUP_RC" -ne 0 || "$reap_failed" -ne 0 ]]; then
+    err "loading $f failed (exit $SUP_RC)${diag:+:$'\n'$diag}"$'\n'"$(cat -- "$d.discovery")"
+  elif [[ -s "$d.discovery" ]]; then
+    # byte size, not a newline-stripped string: a lone newline is output too
+    err "loading $f failed: unexpected output ($(wc -c < "$d.discovery") byte(s)):"$'\n'"$(head -c 2000 -- "$d.discovery")"
   fi
   hard=0; found=()
-  while IFS= read -r n; do
-    [[ "$n" =~ ^[tk]_[A-Za-z0-9_]+$ ]] || continue
-    found+=("$n")
-    [[ "$n" == t_* ]] && hard=$((hard + 1))
-  done < <(LC_ALL=C sort -- "$d.names")
-  remove_in_root "$d"; remove_in_root "$d.names"; remove_in_root "$d.discovery"
+  if [[ "$SUP_TIMED_OUT" -eq 0 && "$SUP_RC" -eq 0 && ! -s "$d.discovery" && "$reap_failed" -eq 0 ]]; then
+    while IFS= read -r n; do
+      [[ "$n" =~ ^[tk]_[A-Za-z0-9_]+$ ]] || continue
+      found+=("$n")
+      [[ "$n" == t_* ]] && hard=$((hard + 1))
+    done < "$d.names"
+    loaded=1
+  else
+    loaded=0
+  fi
+  remove_in_root "$d"; remove_in_root "$d.names"; remove_in_root "$d.discovery"; remove_in_root "$d.diag"
+  [[ "$loaded" -eq 1 ]] || continue
   if [[ "$hard" -eq 0 ]]; then
     err "no t_* tests discovered in $f"; continue
   fi
@@ -281,7 +325,7 @@ for i in "${!t_names[@]}"; do
   fi
   if [[ -z "${KEEP_SANDBOX:-}" ]]; then
     remove_in_root "$d" || { failed=$((failed + 1)); failed_names+=("$n:cleanup"); }
-    remove_in_root "$d.out"
+    remove_in_root "$d.out" || { failed=$((failed + 1)); failed_names+=("$n:cleanup"); }
   fi
 done
 echo

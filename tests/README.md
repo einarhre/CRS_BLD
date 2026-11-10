@@ -92,9 +92,12 @@ tests/infrastructure/run-infrastructure-tests.sh tests/infrastructure/test_commo
 Discovery is automatic: without file arguments every `test_*.sh` in the
 directory is loaded, and the four files named above are mandatory. With file
 arguments only those files are loaded. A file fails discovery (and the run) if
-it is missing or empty, fails `bash -n`, returns nonzero or writes to stderr
-while being sourced, exceeds `INFRA_DISCOVERY_TIMEOUT` (default 30 s), defines
-no `t_*` test, or redefines another file's test.
+it is missing or empty, fails `bash -n`, returns nonzero or writes any byte to
+stdout or stderr (even a lone newline) while being sourced, if listing or
+sorting its test names fails or loses a name, if the whole step (syntax check,
+sourcing, listing and sorting run in one supervised process) exceeds
+`INFRA_DISCOVERY_TIMEOUT` (default 30 s), if it defines no `t_*` test, or if
+it redefines another file's test.
 
 Outcomes: `t_*` tests gate (`PASS`, `FAIL`, or `SKIP` on exit 77). `k_*` tests
 demonstrate known defects (lock leak when a wrapped command fails under
@@ -112,7 +115,11 @@ watchdog (`INFRA_TEST_TIMEOUT`, default 120 s; TERM, then KILL after
 failure, timeout, kill - the runner signals what remains of that process group
 and of the GNU `timeout` groups the test registered, waits for them to exit, and
 then removes the per-test directory it created under its own run directory in
-`TMPDIR`. INT, TERM and HUP to the runner do the same before it exits. Only
+`TMPDIR`. INT, TERM and HUP to the runner do the same before it exits.
+Mandatory cleanup is part of the result: if a process group cannot be reaped
+or a runner-created file or directory (including the final run directory)
+cannot be removed, an otherwise successful run or listing exits 3, and an
+existing failure status is kept. Only
 process groups created for the run are signalled; there is no name-based
 killing. A process that deliberately starts its own session or process group
 without registering it, or that clears its environment and re-parents itself,
@@ -121,8 +128,11 @@ is outside this guarantee.
 Sandboxes: `sandbox_new` aborts the test (exit 90, `HARNESS-ERROR`) if its
 directory cannot be allocated, resolved or verified as an owned, non-symlink
 directory, before the body runs; `SB` stays unset until then and test processes
-run with nounset. Recursive removal is restricted to owned directories inside
-the run directory.
+run with nounset. Recursive removal (`safe_rm_tree`) requires a root that is its
+own physical path and a target whose parent resolves physically to exactly its
+spelling (so no intermediate component is a symlink); ambiguous paths are
+rejected, not normalized. The runner itself removes only direct children of its
+physical run directory, and removes a symlink there without following it.
 
 Command isolation: the scripts under test run only through `run_ctl`
 (`env -i`, an explicit variable list, `HOME` inside the sandbox, no Bash startup
@@ -140,8 +150,10 @@ cannot be intercepted this way, and the scripts under test do not use any.
 Paths: tests pass sandbox paths as arguments, never by interpolation into
 script text. `test_harness.sh` runs representative tests under TMPDIR paths
 containing spaces, apostrophes, tabs and newlines. Diagnostics tests skip under
-a newline (a `.pc` variable cannot hold one); a colon in TMPDIR is unsupported
-because the sandbox directories are placed on `PATH`.
+a newline (a `.pc` variable cannot hold one). A colon in TMPDIR or in the
+sandbox path is rejected before anything is created or run (runner exit 2,
+`sandbox_new` exit 90), because sandbox directories are placed on `PATH` and a
+colon would add an unintended search directory.
 
 Homebrew/macOS handling is exercised with a mocked `uname`/`brew` on Linux only;
 native macOS is not tested.
