@@ -97,6 +97,11 @@ Makefiles with a fake compiler.
 
 ## Running
 
+Use `tests/run-tests.sh` for both existing suites and the aggregate runner's own
+checks. See [the current test guide](../README.md) for prerequisites and result
+reporting. The separate commands below remain supported; the prototype results
+and planning notes in this document are historical provenance.
+
 ```sh
 tests/run-cross-compiler-tests.sh                            # whole shell suite (old + new)
 tests/run-cross-compiler-tests.sh -k '_cc_|_hdr_|^d_'        # only the completion-cache tests

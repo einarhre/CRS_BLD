@@ -31,10 +31,11 @@ For changes to cross-compiler source preparation, recovery, configuration, insta
 - After cross-compiler logic changes, run the relevant shell and Python tests, and validate modified shell files with `bash -n`:
 
   ```sh
-  tests/run-cross-compiler-tests.sh
-  python3 -m unittest discover -s tests -p 'test_*.py'
+  tests/run-tests.sh
   bash -n make_cross-compiler.sh
   ```
+
+  The separate suite commands remain supported; see `tests/README.md` for prerequisites, filtering and skip reporting.
 
 - Inspect `git diff --check` and the complete diff. Do not weaken existing recovery or artifact-preservation assertions just to obtain passing tests.
 - For completion-cache changes, test both a valid no-work hit and a cache miss followed by recovery. Cover incompatibility, interruption, record invalidation before mutation, ZIP publication and preservation of unrelated target artifacts.

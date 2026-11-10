@@ -208,10 +208,13 @@ as well as the new cache-hit assertions.
 Typical verification commands:
 
 ```sh
-tests/run-cross-compiler-tests.sh
-python3 -m unittest discover -s tests -p 'test_*.py'
+tests/run-tests.sh
 bash -n make_cross-compiler.sh
 ```
+
+The aggregate entry point runs both existing suites and its own runner checks.
+Separate suite commands, prerequisites and skip reporting are documented in
+[`tests/README.md`](../tests/README.md).
 
 ### Linux integration evidence (Drangey, 2026-11-08)
 

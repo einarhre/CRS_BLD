@@ -349,11 +349,7 @@ For reproducibility, keep the build scripts, package configuration files, patche
 
 ## Development guidance
 
-Contributors and coding assistants should read [`AGENTS.md`](AGENTS.md). The repository-specific Claude guidance is in [`CLAUDE.md`](CLAUDE.md). Automated regression tests are available via
-`tests/run-cross-compiler-tests.sh`
-and
-`python3 -m unittest discover -s tests -p 'test_*.py'`;
-these do not perform a real GCC toolchain build.
+Contributors and coding assistants should read [`AGENTS.md`](AGENTS.md). The repository-specific Claude guidance is in [`CLAUDE.md`](CLAUDE.md). Run `tests/run-tests.sh` for both existing regression suites and the aggregate runner's own checks; these do not perform a real GCC toolchain build. See [`tests/README.md`](tests/README.md) for prerequisites, skip reporting and the supported separate commands.
 
 ## Warranty disclaimer
 
