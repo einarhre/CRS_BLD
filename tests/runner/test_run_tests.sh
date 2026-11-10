@@ -17,7 +17,7 @@ fixture() {
   mkdir -p "$work/runner" "$work/bin" "$work/infrastructure"
   cp "$here/../run-tests.sh" "$work/run-tests.sh"
   # Each aggregate invocation runs fake self-checks, avoiding recursion.
-  printf '#!/bin/sh\nprintf "checks\\n" >> "$EVENTS"\nexit 0\n' > "$work/runner/test_run_tests.sh"
+  printf '#!/bin/sh\nprintf "checks\\n" >> "$EVENTS"\n[ -z "${ORDER:-}" ] || printf "checks\\n" >> "$ORDER"\nexit "${CHECKS_RC:-0}"\n' > "$work/runner/test_run_tests.sh"
   cat > "$work/run-cross-compiler-tests.sh" <<'SH'
 if [[ $# == 1 && $1 == -l ]]; then
   [[ ${DISCOVERY_RC:-0} == 0 ]] || exit "$DISCOVERY_RC"
@@ -26,6 +26,7 @@ if [[ $# == 1 && $1 == -l ]]; then
 fi
 [[ $# == 0 ]] || { echo "unexpected shell runner arguments: $*" >&2; exit 3; }
 printf 'shell\n' >> "$EVENTS"
+[[ -z ${ORDER:-} ]] || printf 'shell\n' >> "$ORDER"
 printf 'CRS_ROOT=%s\nTMPDIR=%s\n' "${CRS_ROOT:-}" "${TMPDIR:-}"
 echo 'SKIP  t_fake_optional'
 echo '        fake optional prerequisite'
@@ -33,15 +34,17 @@ echo 'passed: 2   failed: 0   advisory-failed: 0   skipped: 1   demos-reproduced
 exit "${SHELL_RC:-0}"
 SH
   # Fake infrastructure runner: records to a separate file so the existing
-  # three-phase event assertions are unchanged.
+  # three-phase event assertions are unchanged, and to the shared ORDER log
+  # that every fake phase appends to (cross-phase ordering evidence).
   cat > "$work/infrastructure/run-infrastructure-tests.sh" <<'SH'
 if [[ $# == 1 && $1 == -l ]]; then
   [[ ${INFRA_DISCOVERY_RC:-0} == 0 ]] || exit "$INFRA_DISCOVERY_RC"
-  printf '%s\n' "${INFRA_NAMES-$'t_common_x\nt_diag_x\nt_pkgs_x'}"
+  printf '%s\n' "${INFRA_NAMES-$'t_common_x\nt_diag_x\nt_harness_x\nt_pkgs_x'}"
   exit 0
 fi
 [[ $# == 0 ]] || { echo "unexpected infrastructure runner arguments: $*" >&2; exit 3; }
 printf 'infra\n' >> "$EVENTS.infra"
+[[ -z ${ORDER:-} ]] || printf 'infra\n' >> "$ORDER"
 echo 'passed: 3   failed: 0   skipped: 0'
 exit "${INFRA_RC:-0}"
 SH
@@ -60,6 +63,7 @@ PY
   cat > "$work/bin/python3" <<'SH'
 #!/bin/sh
 printf 'python\n' >> "$EVENTS"
+[ -z "${ORDER:-}" ] || printf 'python\n' >> "$ORDER"
 printf 'CRS_ROOT=%s\nTMPDIR=%s\n' "${CRS_ROOT:-}" "${TMPDIR:-}"
 if [ "${PYTHON_RC:-0}" != 0 ]; then exit "$PYTHON_RC"; fi
 exec "$REAL_PYTHON" "$@"
@@ -67,16 +71,16 @@ SH
   chmod +x "$work/bin/python3"
   ln -s "$real_bash" "$work/bin/bash"
   ln -s "$(command -v dirname)" "$work/bin/dirname"
-  : > "$work/events"; : > "$work/events.infra"
+  : > "$work/events"; : > "$work/events.infra"; : > "$work/order"
 }
 
 run() {
   rc=0
   # A restricted PATH makes missing interpreters deterministic on any host.
   ( cd "$scratch"; env -u SHELL_NAMES -u DISCOVERY_RC -u SHELL_RC -u PYTHON_RC \
-      -u INFRA_NAMES -u INFRA_DISCOVERY_RC -u INFRA_RC \
+      -u INFRA_NAMES -u INFRA_DISCOVERY_RC -u INFRA_RC -u CHECKS_RC \
       -u PYTHONDONTWRITEBYTECODE -u PYTHONPYCACHEPREFIX \
-      "PATH=$work/bin" "EVENTS=$work/events" "REAL_PYTHON=$real_python" \
+      "PATH=$work/bin" "EVENTS=$work/events" "ORDER=$work/order" "REAL_PYTHON=$real_python" \
       "REAL_BASH=$real_bash" "$@" "$real_bash" "$work/run-tests.sh" \
       > "$work/output" 2>&1 ) || rc=$?
 }
@@ -234,11 +238,14 @@ run
 bad; events $'shell\npython\nchecks'; contains 'Runner checks: exit 6'
 pass runner_check_failure_reported
 
+order() { [[ "$(cat "$work/order")" == "$1" ]] || fail "unexpected phase order: $(tr '\n' ' ' < "$work/order")"; }
+all4=$'shell\npython\nchecks\ninfra'
+
 infra_events() { [[ "$(cat "$work/events.infra")" == "$1" ]] || fail 'unexpected infrastructure suite execution'; }
 
 fixture infra_success
 run
-ok; events $'shell\npython\nchecks'; infra_events infra
+ok; events $'shell\npython\nchecks'; infra_events infra; order "$all4"
 contains '=== Infrastructure characterization suite ==='; contains 'Infrastructure suite: exit 0'
 pass infrastructure_suite_runs_last_and_is_reported
 
@@ -286,5 +293,39 @@ rm "$work/bin/bash"
 run
 bad; infra_events ''; contains 'NOT RUN: infrastructure suite'; contains 'Infrastructure suite: not run'
 pass missing_bash_marks_infrastructure_not_run
+
+fixture order_after_python_failure
+run PYTHON_RC=8
+bad; order "$all4"; contains 'Python suite: exit 8'; contains 'Runner checks: exit 0'
+contains 'Infrastructure suite: exit 0'
+pass python_failure_still_runs_checks_and_infrastructure_in_order
+
+fixture order_after_checks_failure
+run CHECKS_RC=6
+bad; order "$all4"; contains 'Runner checks: exit 6'; contains 'Infrastructure suite: exit 0'
+pass runner_check_failure_still_runs_infrastructure
+
+fixture order_after_shell_failure
+run SHELL_RC=9
+bad; order "$all4"; contains 'Shell suite: exit 9'; contains 'Python suite: exit 0'
+contains 'Runner checks: exit 0'; contains 'Infrastructure suite: exit 0'
+pass shell_failure_runs_all_later_phases_in_order
+
+fixture order_all_fail
+run SHELL_RC=9 PYTHON_RC=8 CHECKS_RC=6 INFRA_RC=5
+bad; order "$all4"
+contains 'Shell suite: exit 9'; contains 'Python suite: exit 8'
+contains 'Runner checks: exit 6'; contains 'Infrastructure suite: exit 5'
+pass every_phase_failing_still_runs_all_four_in_order
+
+fixture order_infra_discovery_failure
+run INFRA_DISCOVERY_RC=4
+bad; order $'shell\npython\nchecks'; contains 'Infrastructure suite: exit 1'
+pass infrastructure_discovery_failure_after_other_phases
+
+fixture infra_harness_component_missing
+run INFRA_NAMES=$'t_common_x\nt_diag_x\nt_pkgs_x'
+bad; infra_events ''; contains 'no t_harness_* tests discovered'
+pass infrastructure_without_harness_self_tests_rejected
 
 printf 'Runner checks passed: %s; failed: 0; skipped: 0\n' "$passed"
