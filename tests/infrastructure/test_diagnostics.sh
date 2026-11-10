@@ -3,6 +3,13 @@
 # what a corrected diagnostics script should do.  Output paths are normalized:
 # the sandbox's fabricated root is shown as ROOT.
 
+# A .pc file is line-based: a prefix containing a newline cannot be written
+# into one, so these tests skip (rather than misreport) under such a TMPDIR.
+diag_sandbox() {
+  sandbox_new
+  [[ "$SB" != *$'\n'* ]] || skip 'sandbox path contains a newline; .pc variables cannot represent it'
+}
+
 # diag_prefix TRG KIND -> creates and prints the prefix directory
 diag_prefix() {
   local p="$SB/root/$1/$2"
@@ -22,16 +29,16 @@ mkpc() {
   } > "$f"
 }
 
-# run_diag [args...]: RC and OUT (normalized); runs from a neutral cwd
+# run_diag [args...]: RC and OUT (normalized); runs from the sandbox as cwd in
+# the controlled environment (pinned Linux platform, no host PATH).
 run_diag() {
-  RC=0
-  OUT="$(cd "$SB" && env "PREF=$SB/pref" bash "$DIAG_SH" "$@" 2>&1)" || RC=$?
-  OUT="${OUT//$SB\/root/ROOT}"
-  OUT="${OUT//$SB/SB}"
+  run_ctl NCRS=4 -- "$BASH_BIN" --noprofile --norc "$DIAG_SH" "$@"
+  OUT="${OUT//"$SB/root"/ROOT}"
+  OUT="$(norm_sb "$OUT")"
 }
 
 t_diag_valid_package_reports_only_header() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -L${libdir} -lfoo -lm'
@@ -46,7 +53,7 @@ SKIP: missing prefix: ROOT/$TRG64/shared" "$OUT" 'valid package output'
 }
 
 t_diag_missing_library_reported_for_libs_and_libs_private() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -L${libdir} -lfoo -lpub' 'Libs.private: -lpriv -lfoo'
@@ -58,19 +65,19 @@ t_diag_missing_library_reported_for_libs_and_libs_private() {
 " 'private lib'
   assert_contains "$OUT" '  pc wants : -lpub' 'public lib'
   assert_not_contains "$OUT" '-lfoo' 'present library not reported'
-  assert_eq 2 "$(grep -c '^MISSING_LIB_FROM_PC' <<< "$OUT")" 'one report per missing library'
+  assert_eq 2 "$(count_prefixed_lines "$OUT" MISSING_LIB_FROM_PC)" 'one report per missing library'
 }
 
 t_diag_libraries_listed_once_per_pc_even_if_repeated() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -lx -lx' 'Libs.private: -lx'
   run_diag "$SB/root"
-  assert_eq 1 "$(grep -c '^MISSING_LIB_FROM_PC' <<< "$OUT")" 'sort -u de-duplicates names across Libs lines'
+  assert_eq 1 "$(count_prefixed_lines "$OUT" MISSING_LIB_FROM_PC)" 'sort -u de-duplicates names across Libs lines'
 }
 
 t_diag_missing_library_directories() {
-  sandbox_new
+  diag_sandbox
   local p="$SB/root/$TRG64/static"
   mkdir -p "$p/share/pkgconfig"     # no lib/ and no lib64/
   mkpc "$p/share/pkgconfig/foo.pc" "$p" 'Libs: -lfoo'
@@ -84,7 +91,7 @@ t_diag_missing_library_directories() {
 }
 
 t_diag_prefix_without_pkgconfig_directories_is_silent() {
-  sandbox_new
+  diag_sandbox
   mkdir -p "$SB/root/$TRG64/static/lib"
   run_diag "$SB/root"
   assert_rc 0 "$RC" status
@@ -94,7 +101,7 @@ t_diag_prefix_without_pkgconfig_directories_is_silent() {
 }
 
 t_diag_empty_pkgconfig_directory_prints_header_only() {
-  sandbox_new
+  diag_sandbox
   diag_prefix $TRG64 shared >/dev/null
   run_diag "$SB/root"
   assert_contains "$OUT" "
@@ -103,7 +110,7 @@ t_diag_empty_pkgconfig_directory_prints_header_only() {
 }
 
 t_diag_duplicate_pc_names_across_directories() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkdir -p "$p/lib64/pkgconfig" "$p/share/pkgconfig"
   : > "$p/lib/libfoo.a"
@@ -120,11 +127,11 @@ t_diag_duplicate_pc_names_across_directories() {
 DUPLICATE_PC: foo
   first: ROOT/$TRG64/static/lib/pkgconfig/foo.pc
   again: ROOT/$TRG64/static/share/pkgconfig/foo.pc" 'duplicates'
-  assert_eq 2 "$(grep -c '^DUPLICATE_PC' <<< "$OUT")" 'count'
+  assert_eq 2 "$(count_prefixed_lines "$OUT" DUPLICATE_PC)" 'count'
 }
 
 t_diag_same_pc_name_in_different_targets_is_not_duplicate() {
-  sandbox_new
+  diag_sandbox
   local t p
   for t in $TRG32 $TRG64; do
     p="$(diag_prefix $t static)"
@@ -136,7 +143,7 @@ t_diag_same_pc_name_in_different_targets_is_not_duplicate() {
 }
 
 t_diag_pc_directory_mismatch() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkdir -p "$p/lib64/pkgconfig"
   : > "$p/lib/libfoo.a"
@@ -153,7 +160,7 @@ t_diag_pc_directory_mismatch() {
 }
 
 t_diag_libdir_matching_any_actual_location_is_accepted() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkdir -p "$p/lib64"
   : > "$p/lib/libfoo.a"; : > "$p/lib64/libfoo.a"
@@ -163,7 +170,7 @@ t_diag_libdir_matching_any_actual_location_is_accepted() {
 }
 
 t_diag_no_L_flag_means_no_location_check() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkdir -p "$p/lib64"
   : > "$p/lib64/libfoo.a"
@@ -174,7 +181,7 @@ t_diag_no_L_flag_means_no_location_check() {
 }
 
 t_diag_variable_expansion_chain_and_unusual_variables() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   {
@@ -188,7 +195,7 @@ t_diag_variable_expansion_chain_and_unusual_variables() {
 }
 
 t_diag_pc_without_exec_prefix_uses_prefix_default() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   printf 'prefix=%s\nlibdir=${exec_prefix}/lib\nLibs: -L${libdir} -lfoo\n' "$p" > "$p/lib/pkgconfig/foo.pc"
@@ -200,7 +207,7 @@ t_diag_pc_without_exec_prefix_uses_prefix_default() {
 t_diag_unresolvable_variable_is_not_rejected_but_changes_path() {
   # An unknown ${var} survives five substitution rounds and is then passed to
   # `realpath -m`, i.e. interpreted relative to the current directory.
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -L${pcfiledir}/.. -lfoo'
@@ -212,7 +219,7 @@ t_diag_unresolvable_variable_is_not_rejected_but_changes_path() {
 }
 
 t_diag_system_libraries_are_exempt() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   local libs=(m dl rt pthread atomic 'stdc++' gcc gcc_s mingw32 mingwex msvcrt ucrt ksuser
     cfgmgr32 kernel32 user32 gdi32 winspool shell32 ole32 oleaut32 uuid comdlg32 advapi32 bcrypt crypt32
@@ -226,7 +233,7 @@ t_diag_system_libraries_are_exempt() {
 }
 
 t_diag_system_library_exemption_is_exact_name_only() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkpc "$p/lib/pkgconfig/x.pc" "$p" 'Libs: -lm -lmx -lkernel32 -lkernel32x -lz -lstdc++fs -lws2_32 -lWS2_32'
   run_diag "$SB/root"
@@ -238,7 +245,7 @@ t_diag_system_library_exemption_is_exact_name_only() {
 }
 
 t_diag_static_vs_shared_import_library_names() {
-  sandbox_new
+  diag_sandbox
   local ps pd
   ps="$(diag_prefix $TRG64 static)"; pd="$(diag_prefix $TRG64 shared)"
   : > "$ps/lib/libs1.a"; : > "$ps/lib/libs2.dll.a"; : > "$ps/lib/libs3.so"; : > "$ps/lib/libs4.lib"
@@ -252,11 +259,11 @@ t_diag_static_vs_shared_import_library_names() {
   assert_contains "$OUT" '  pc wants : -ls3'; assert_contains "$OUT" '  pc wants : -ls4'
   assert_contains "$OUT" '  pc wants : -ld2'; assert_contains "$OUT" '  pc wants : -ld3'
   assert_not_contains "$OUT" '-ls1'; assert_not_contains "$OUT" '-ls2'; assert_not_contains "$OUT" '-ld1'
-  assert_eq 4 "$(grep -c '^MISSING_LIB_FROM_PC' <<< "$OUT")" 'exactly the four unsupported names'
+  assert_eq 4 "$(count_prefixed_lines "$OUT" MISSING_LIB_FROM_PC)" 'exactly the four unsupported names'
 }
 
 t_diag_static_kind_is_processed_before_shared_and_i686_before_x86_64() {
-  sandbox_new
+  diag_sandbox
   local t k p
   for t in $TRG64 $TRG32; do for k in shared static; do
     p="$(diag_prefix $t $k)"
@@ -269,7 +276,7 @@ t_diag_static_kind_is_processed_before_shared_and_i686_before_x86_64() {
 }
 
 t_diag_both_target_architectures_are_checked_independently() {
-  sandbox_new
+  diag_sandbox
   local p32 p64
   p32="$(diag_prefix $TRG32 static)"; p64="$(diag_prefix $TRG64 static)"
   : > "$p32/lib/libok.a"
@@ -286,7 +293,7 @@ t_diag_both_target_architectures_are_checked_independently() {
 }
 
 t_diag_lib64_and_share_pkgconfig_are_scanned() {
-  sandbox_new
+  diag_sandbox
   local p="$SB/root/$TRG64/static"
   mkdir -p "$p/lib64/pkgconfig" "$p/share/pkgconfig"
   : > "$p/lib64/libx.a"
@@ -299,7 +306,7 @@ t_diag_lib64_and_share_pkgconfig_are_scanned() {
 }
 
 t_diag_symlinked_library_file_and_directory_are_followed() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkdir -p "$p/store"; : > "$p/store/libreal.a"
   ln -s ../store/libreal.a "$p/lib/liblinked.a"        # file symlink in lib/
@@ -311,7 +318,7 @@ t_diag_symlinked_library_file_and_directory_are_followed() {
 }
 
 t_diag_dangling_library_symlink_counts_as_missing() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   ln -s nowhere "$p/lib/libdead.a"
   mkpc "$p/lib/pkgconfig/d.pc" "$p" 'Libs: -L${libdir} -ldead'
@@ -320,7 +327,7 @@ t_diag_dangling_library_symlink_counts_as_missing() {
 }
 
 t_diag_symlinked_pc_file_is_not_scanned() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkpc "$SB/real.pc" "$p" 'Libs: -lmissing'
   ln -s "$SB/real.pc" "$p/lib/pkgconfig/link.pc"
@@ -332,21 +339,20 @@ t_diag_symlinked_pc_file_is_not_scanned() {
 t_diag_symlinked_root_reports_false_location_mismatch() {
   # realpath resolves the symlinked root for -L directories while find reports
   # library paths under the symlink path, so a correct package mismatches.
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -L${libdir} -lfoo'
   run_diag "$SB/root"
   assert_not_contains "$OUT" PC_FILE_LOCATION_MISMATCH 'direct path: clean'
   ln -s root "$SB/rootlink"
-  RC=0
-  OUT="$(cd "$SB" && env "PREF=$SB/pref" bash "$DIAG_SH" "$SB/rootlink" 2>&1)" || RC=$?
+  run_diag "$SB/rootlink"
   assert_rc 0 "$RC" status
   assert_contains "$OUT" 'PC_FILE_LOCATION_MISMATCH: lib/pkgconfig/foo.pc' 'via symlinked root'
 }
 
 t_diag_missing_root_skips_all_four_prefixes() {
-  sandbox_new
+  diag_sandbox
   run_diag "$SB/nonexistent"
   assert_rc 0 "$RC" status
   assert_eq "SKIP: missing prefix: SB/nonexistent/$TRG32/static
@@ -356,20 +362,19 @@ SKIP: missing prefix: SB/nonexistent/$TRG64/shared" "$OUT"
 }
 
 t_diag_default_root_is_pref_install_pkg() {
-  sandbox_new
+  diag_sandbox
   local p="$SB/pref/install/pkg/$TRG64/static"
   mkdir -p "$p/lib/pkgconfig"; : > "$p/lib/libfoo.a"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -L${libdir} -lfoo -lnope'
-  RC=0
-  OUT="$(cd "$SB" && env "PREF=$SB/pref" bash "$DIAG_SH" 2>&1)" || RC=$?
+  run_diag
   assert_rc 0 "$RC" status
-  assert_contains "$OUT" "SKIP: missing prefix: $SB/pref/install/pkg/$TRG32/static"
+  assert_contains "$OUT" "SKIP: missing prefix: SB/pref/install/pkg/$TRG32/static"
   assert_contains "$OUT" "== $TRG64/static =="
   assert_contains "$OUT" '  pc wants : -lnope'
 }
 
 t_diag_only_first_argument_is_used() {
-  sandbox_new
+  diag_sandbox
   mkdir -p "$SB/second"
   run_diag "$SB/root" "$SB/second"
   assert_rc 0 "$RC" status
@@ -378,7 +383,7 @@ t_diag_only_first_argument_is_used() {
 }
 
 t_diag_exit_status_is_zero_even_with_all_defect_kinds() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   mkdir -p "$p/lib64/pkgconfig"
   : > "$p/lib/libfoo.a"
@@ -387,13 +392,14 @@ t_diag_exit_status_is_zero_even_with_all_defect_kinds() {
   printf 'prefix=%s\nlibdir=${prefix}/nodir\nLibs: -lfoo\n' "$p" > "$p/lib64/pkgconfig/bar.pc"
   run_diag "$SB/root"
   assert_rc 0 "$RC" 'diagnostics are informational'
+  local k
   for k in BAD_LIBDIR MISSING_LIB_FROM_PC PC_FILE_LOCATION_MISMATCH DUPLICATE_PC; do
     assert_contains "$OUT" "$k:" "$k reported"
   done
 }
 
 t_diag_pc_libdir_check_runs_even_when_no_libs_listed() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   printf 'prefix=%s\nlibdir=${prefix}/nodir\nName: x\n' "$p" > "$p/lib/pkgconfig/x.pc"
   run_diag "$SB/root"
@@ -402,15 +408,15 @@ t_diag_pc_libdir_check_runs_even_when_no_libs_listed() {
 }
 
 t_diag_pc_without_libdir_is_not_checked_for_libdir() {
-  sandbox_new
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   printf 'Name: x\nLibs:\n' > "$p/lib/pkgconfig/x.pc"
   run_diag "$SB/root"
   assert_not_contains "$OUT" BAD_LIBDIR
 }
 
-t_diag_is_read_only_and_leaves_no_files() {
-  sandbox_new
+t_diag_is_read_only_and_leaves_no_files_or_dirs() {
+  diag_sandbox
   local p; p="$(diag_prefix $TRG64 static)"
   : > "$p/lib/libfoo.a"
   mkpc "$p/lib/pkgconfig/foo.pc" "$p" 'Libs: -L${libdir} -lfoo -lgone'
@@ -420,4 +426,5 @@ t_diag_is_read_only_and_leaves_no_files() {
   after="$(cd "$SB" && find root -printf '%p %s %T@\n' | sort)"
   assert_eq "$before" "$after" 'fabricated tree untouched'
   assert_absent "$SB/pref" 'PREF not created'
+  assert_eq '' "$(ls -A "$SB/tmp")" 'no temporary files'
 }
